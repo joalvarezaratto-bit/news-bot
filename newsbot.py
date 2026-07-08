@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+Bot de noticias + calendario economico -> alertas a Telegram.
+
+Comandos:
+    python3 newsbot.py test      -> manda un mensaje de prueba a tu Telegram
+    python3 newsbot.py chatid    -> descubre tu CHAT_ID (escribele "hola" al bot antes)
+    python3 newsbot.py report    -> arma y envia el informe de la manana
+    python3 newsbot.py watch     -> vigila noticias y alerta al instante (deja corriendo)
+    python3 newsbot.py once      -> revisa noticias UNA vez (util para cron)
+
+Honesto: detecta que SALIO la noticia, no predice si el precio sube o baja.
+Los RSS gratis pueden tardar 1-5 min vs terminales de pago.
+"""
+import sys, os, json, time, html
+import datetime as dt
+import requests
+import feedparser
+import config as C
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SEEN_FILE = os.path.join(HERE, "seen.json")
+API = "https://api.telegram.org/bot{token}/{method}"
+
+
+# --------------------------- Telegram --------------------------------
+def tg(method, **params):
+    url = API.format(token=C.TELEGRAM_TOKEN, method=method)
+    r = requests.get(url, params=params, timeout=20)
+    return r.json()
+
+def send(text):
+    """Envia un mensaje a tu chat. Usa HTML para negritas."""
+    if not C.CHAT_ID:
+        print("ERROR: CHAT_ID = 0. Corre primero: python3 newsbot.py chatid")
+        return False
+    res = tg("sendMessage", chat_id=C.CHAT_ID, text=text,
+             parse_mode="HTML", disable_web_page_preview="true")
+    if not res.get("ok"):
+        print("Telegram respondio error:", res)
+        return False
+    return True
+
+
+# --------------------------- Utilidades ------------------------------
+def check_token():
+    if C.TELEGRAM_TOKEN == "PEGA_TU_TOKEN_AQUI" or not C.TELEGRAM_TOKEN:
+        print("ERROR: falta tu token en config.py (linea TELEGRAM_TOKEN).")
+        sys.exit(1)
+
+def load_seen():
+    if os.path.exists(SEEN_FILE):
+        try:
+            return set(json.load(open(SEEN_FILE)))
+        except Exception:
+            return set()
+    return set()
+
+def save_seen(seen):
+    # guardamos solo los ultimos 500 para no crecer infinito
+    json.dump(list(seen)[-500:], open(SEEN_FILE, "w"))
+
+def score_headline(title):
+    """Devuelve (puntaje, palabras_encontradas)."""
+    t = title.lower()
+    pts, hits = 0, []
+    for kw in C.KW_HIGH:
+        if kw in t:
+            pts += 3; hits.append(kw.strip())
+    for kw in C.KW_MED:
+        if kw in t:
+            pts += 1; hits.append(kw.strip())
+    return pts, hits
+
+def esc(s):
+    return html.escape(s or "")
+
+
+# --------------------------- Calendario ------------------------------
+CAL_FILE = os.path.join(HERE, "calendar_cache.json")
+CAL_TTL = 3 * 3600   # refrescar como mucho cada 3 horas (el feed limita peticiones)
+_CAL_CACHE = None
+
+def _read_cal_cache():
+    if os.path.exists(CAL_FILE):
+        try:
+            blob = json.load(open(CAL_FILE))
+            return blob.get("ts", 0), blob.get("data", [])
+        except Exception:
+            pass
+    return 0, []
+
+def fetch_calendar():
+    """Eventos de esta semana (ForexFactory, gratis). Cachea en disco 3h y
+    aguanta el rate-limit 429 devolviendo la ultima copia guardada."""
+    global _CAL_CACHE
+    if _CAL_CACHE is not None:
+        return _CAL_CACHE
+    ts, cached = _read_cal_cache()
+    if cached and (time.time() - ts) < CAL_TTL:
+        _CAL_CACHE = cached
+        return _CAL_CACHE
+    try:
+        r = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        if r.status_code == 429:
+            raise RuntimeError("rate limit (429)")
+        data = r.json()
+        json.dump({"ts": time.time(), "data": data}, open(CAL_FILE, "w"))
+        _CAL_CACHE = data
+    except Exception as e:
+        print(f"No pude refrescar el calendario ({e}); uso copia guardada.")
+        _CAL_CACHE = cached
+    return _CAL_CACHE
+
+def calendar_for_day(target_date):
+    """Eventos de impacto Alto/Medio para una fecha dada (paises configurados)."""
+    out = []
+    for e in fetch_calendar():
+        if e.get("country") not in C.CALENDAR_COUNTRIES:
+            continue
+        if e.get("impact") not in ("High", "Medium"):
+            continue
+        try:
+            when = dt.datetime.fromisoformat(e["date"])
+        except Exception:
+            continue
+        if when.date() == target_date:
+            out.append((when, e))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+# --------------------------- Noticias --------------------------------
+def collect_news():
+    """Devuelve lista de (fuente, titulo, link, entry_id)."""
+    items = []
+    for src, url in C.NEWS_FEEDS.items():
+        try:
+            d = feedparser.parse(url)
+        except Exception:
+            continue
+        for e in d.entries[:30]:
+            eid = e.get("id") or e.get("link") or e.get("title", "")
+            title = html.unescape(e.get("title", "").strip())
+            items.append((src, title, e.get("link", ""), eid))
+    return items
+
+
+# --------------------------- Comandos --------------------------------
+def cmd_test():
+    check_token()
+    if send("<b>Bot de noticias conectado.</b>\nSi ves esto, todo funciona."):
+        print("Enviado. Revisa tu Telegram.")
+
+def cmd_chatid():
+    check_token()
+    res = tg("getUpdates")
+    if not res.get("ok"):
+        print("Error hablando con Telegram:", res); return
+    updates = res.get("result", [])
+    if not updates:
+        print("No hay mensajes. Abre tu bot en Telegram, mandale 'hola', y vuelve a correr esto.")
+        return
+    ids = {}
+    for u in updates:
+        msg = u.get("message") or u.get("channel_post") or {}
+        chat = msg.get("chat", {})
+        if chat.get("id"):
+            ids[chat["id"]] = chat.get("first_name") or chat.get("title") or "?"
+    print("Chat IDs encontrados:")
+    for cid, name in ids.items():
+        print(f"   CHAT_ID = {cid}   (de: {name})")
+    print("\nCopia ese numero en config.py -> CHAT_ID")
+
+def build_report():
+    """Arma el texto del informe matutino."""
+    today = dt.date.today()
+    yest = today - dt.timedelta(days=1)
+    lines = [f"<b>Informe economico — {today.strftime('%d/%m/%Y')}</b>\n"]
+
+    # --- lo agendado para HOY ---
+    hoy = calendar_for_day(today)
+    lines.append("<b>Agenda de hoy:</b>")
+    if hoy:
+        for when, e in hoy:
+            flag = "🔴" if e["impact"] == "High" else "🟠"
+            fc = f" (esp: {e['forecast']}, prev: {e['previous']})" if e.get("forecast") else ""
+            lines.append(f"{flag} {when.strftime('%H:%M')} {esc(e['country'])} — {esc(e['title'])}{esc(fc)}")
+    else:
+        lines.append("Sin eventos de alto/medio impacto hoy.")
+
+    # --- lo que paso AYER (eventos con dato ya publicado) ---
+    ayer = calendar_for_day(yest)
+    lines.append("\n<b>Lo de ayer:</b>")
+    if ayer:
+        for when, e in ayer:
+            act = e.get("actual") or "—"
+            lines.append(f"• {esc(e['title'])}: dato {esc(act)} (esp: {esc(e.get('forecast') or '—')})")
+    else:
+        lines.append("Sin eventos relevantes ayer.")
+
+    # --- titulares mas fuertes de las ultimas horas ---
+    lines.append("\n<b>Titulares destacados:</b>")
+    ranked = []
+    for src, title, link, eid in collect_news():
+        pts, hits = score_headline(title)
+        if pts > 0:
+            ranked.append((pts, src, title, link))
+    ranked.sort(reverse=True)
+    if ranked:
+        for pts, src, title, link in ranked[:6]:
+            lines.append(f'• <a href="{esc(link)}">{esc(title)}</a> <i>({esc(src)})</i>')
+    else:
+        lines.append("Nada relevante en los feeds ahora mismo.")
+
+    return "\n".join(lines)
+
+def local_now():
+    """Hora actual en la zona horaria configurada (ej. Chile)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.now(ZoneInfo(C.TIMEZONE))
+    except Exception:
+        return dt.datetime.now()
+
+def cmd_report():
+    check_token()
+    # --gate: solo envia si en tu zona horaria es la hora del informe.
+    # Se usa en la nube, donde el workflow corre cada hora.
+    if "--gate" in sys.argv:
+        h = local_now().hour
+        if h != C.REPORT_HOUR:
+            print(f"Aun no es la hora ({h}h en {C.TIMEZONE}, informe a las {C.REPORT_HOUR}h). No envio.")
+            return
+    text = build_report()
+    if send(text):
+        print("Informe enviado a Telegram.")
+
+def cmd_once(verbose=True):
+    """Revisa feeds una vez y alerta lo nuevo que supere el umbral."""
+    check_token()
+    seen = load_seen()
+    nuevos = 0
+    for src, title, link, eid in collect_news():
+        if eid in seen:
+            continue
+        seen.add(eid)
+        pts, hits = score_headline(title)
+        if pts >= C.ALERT_THRESHOLD:
+            msg = (f"🚨 <b>Noticia importante</b> <i>({esc(src)})</i>\n\n"
+                   f'<a href="{esc(link)}">{esc(title)}</a>\n\n'
+                   f"<i>señales: {esc(', '.join(sorted(set(hits))))}</i>")
+            if send(msg):
+                nuevos += 1
+    save_seen(seen)
+    if verbose:
+        print(f"Revision hecha. Alertas nuevas enviadas: {nuevos}")
+    return nuevos
+
+def cmd_watch():
+    check_token()
+    print(f"Vigilando noticias cada {C.WATCH_EVERY_MIN} min. Ctrl+C para parar.")
+    # primera pasada: marcar lo actual como visto sin alertar (evita spam inicial)
+    seen = load_seen()
+    for src, title, link, eid in collect_news():
+        seen.add(eid)
+    save_seen(seen)
+    print("Estado inicial guardado. A partir de ahora solo avisa lo NUEVO.")
+    while True:
+        try:
+            cmd_once(verbose=False)
+        except Exception as e:
+            print("Error en ciclo (sigo):", e)
+        time.sleep(C.WATCH_EVERY_MIN * 60)
+
+
+CMDS = {"test": cmd_test, "chatid": cmd_chatid, "report": cmd_report,
+        "once": cmd_once, "watch": cmd_watch}
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd not in CMDS:
+        print(__doc__)
+        sys.exit(0)
+    CMDS[cmd]()

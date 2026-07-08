@@ -1,0 +1,23 @@
+name: Informe diario 9AM Chile
+
+on:
+  schedule:
+    # Corre cada hora en punto (hora UTC). El bot decide con --gate si en
+    # Chile ya son las 9 AM; asi el horario de verano nunca lo descuadra.
+    - cron: "0 * * * *"
+  workflow_dispatch:   # boton para correrlo a mano desde GitHub
+
+jobs:
+  informe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Enviar informe si es la hora
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python newsbot.py report --gate

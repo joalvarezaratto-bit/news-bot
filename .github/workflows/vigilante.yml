@@ -1,0 +1,37 @@
+name: Vigilante de noticias
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # revisa cada ~15 minutos
+  workflow_dispatch:
+
+# Permite guardar seen.json de vuelta (para no repetir alertas).
+permissions:
+  contents: write
+
+# Evita que dos revisiones choquen si una tarda.
+concurrency:
+  group: vigilante
+  cancel-in-progress: false
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Revisar noticias y alertar
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python newsbot.py once
+      - name: Recordar lo ya avisado
+        run: |
+          git config user.name "news-bot"
+          git config user.email "news-bot@users.noreply.github.com"
+          git add seen.json || true
+          git commit -m "estado: noticias ya avisadas" || echo "sin cambios"
+          git push || echo "nada que subir"

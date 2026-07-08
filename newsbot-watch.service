@@ -1,0 +1,15 @@
+[Unit]
+Description=Radar financiero - vigilante de noticias (alertas Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/news-bot
+ExecStart=/usr/bin/python3 /home/ubuntu/news-bot/newsbot.py watch
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
