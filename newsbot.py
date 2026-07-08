@@ -160,6 +160,15 @@ def _norm_title(title):
     t = _re.sub(r"\s+", " ", t).strip()
     return t[:80]
 
+def _extract_summary(entry, title):
+    """Extracto/descripcion de la noticia desde el feed (texto limpio, sin HTML)."""
+    raw = entry.get("summary", "") or entry.get("description", "")
+    txt = html.unescape(_re.sub(r"<[^>]+>", "", raw)).strip()
+    # Google News mete el titulo + fuente como 'resumen' -> no aporta, lo descartamos
+    if not txt or _norm_title(txt)[:40] == _norm_title(title)[:40]:
+        return ""
+    return _re.sub(r"\s+", " ", txt)
+
 def collect_news():
     """Devuelve lista de dicts: {src, title, link, eid, base}.
     Junta medios directos + busquedas de Google, y DE-DUPLICA la misma
@@ -174,7 +183,8 @@ def collect_news():
         for e in d.entries[:30]:
             title = html.unescape(e.get("title", "").strip())
             raw.append({"src": src, "title": title, "link": e.get("link", ""),
-                        "eid": e.get("id") or e.get("link") or title, "base": 0})
+                        "eid": e.get("id") or e.get("link") or title, "base": 0,
+                        "summary": _extract_summary(e, title)})
     # busquedas tematicas de Google (ya vienen filtradas -> base score)
     for tema, query in getattr(C, "GOOGLE_TOPICS", {}).items():
         try:
@@ -185,7 +195,8 @@ def collect_news():
             title = html.unescape(e.get("title", "").strip())
             raw.append({"src": tema, "title": title, "link": e.get("link", ""),
                         "eid": e.get("id") or e.get("link") or title,
-                        "base": getattr(C, "GOOGLE_BASE_SCORE", 0)})
+                        "base": getattr(C, "GOOGLE_BASE_SCORE", 0),
+                        "summary": _extract_summary(e, title)})
     # de-duplicar por titulo normalizado
     seen_titles, items = set(), []
     for it in raw:
@@ -290,26 +301,31 @@ def cmd_report():
     if send(text):
         print("Informe enviado a Telegram.")
 
-def _short_line(title, source):
-    """Resumen de 2 lineas max. Usa IA si hay saldo; si no, recorta el titular."""
+def _build_body(item):
+    """Cuerpo de la alerta (~4 lineas). Con IA: que paso/por que importa/reaccion.
+    Sin IA: titulo + extracto de la noticia, ambos traducidos al español."""
+    title, source = item["title"], item["src"]
+    # 1) intento con IA (si hay saldo)
     try:
         import ai_summary
         out = ai_summary.summarize_alert(title, source)
     except Exception:
         out = None
     if out and out.strip().upper() != "IRRELEVANTE":
-        # nos quedamos con las primeras 2 lineas no vacias
-        lns = [l.strip() for l in out.splitlines() if l.strip()]
-        return "\n".join(lns[:2]) if lns else None
+        lns = [esc(l.strip()) for l in out.splitlines() if l.strip()]
+        return "\n".join(lns[:4]) if lns else None
     if out and out.strip().upper() == "IRRELEVANTE":
         return None
-    # fallback sin IA: traducir el titular al español
-    try:
-        import translate
-        title = translate.to_es(title)
-    except Exception:
-        pass
-    return (title[:180] + "…") if len(title) > 180 else title
+    # 2) fallback sin IA: titulo + extracto, traducidos
+    import translate
+    partes = [f"<b>{esc(translate.to_es(title))}</b>"]
+    extracto = item.get("summary", "")
+    if extracto:
+        extracto = translate.to_es(extracto[:280])
+        if len(extracto) > 240:
+            extracto = extracto[:240].rsplit(" ", 1)[0] + "…"
+        partes.append(esc(extracto))
+    return "\n".join(partes)
 
 def cmd_once(verbose=True):
     """Revisa feeds una vez y alerta SOLO las mas fuertes (anti-inundacion)."""
@@ -341,15 +357,15 @@ def cmd_once(verbose=True):
         if len(elegidos) >= tope:
             break
 
-    # 3) enviar en formato corto (2 lineas)
+    # 3) enviar en formato ~4 lineas
     nuevos = 0
     for pts, hits, it in elegidos:
         urg = "🔴" if pts >= 9 else "🟠"
-        resumen = _short_line(it["title"], it["src"])
-        if not resumen:              # IA dijo que era irrelevante
+        cuerpo = _build_body(it)     # ya viene con HTML escapado
+        if not cuerpo:               # IA dijo que era irrelevante
             continue
-        msg = (f"{urg} <b>{esc(it['src'])}</b>\n"
-               f"{esc(resumen)}\n"
+        msg = (f"{urg} <i>{esc(it['src'])}</i>\n"
+               f"{cuerpo}\n"
                f'<a href="{esc(it["link"])}">ver noticia</a>')
         if send(msg):
             nuevos += 1
