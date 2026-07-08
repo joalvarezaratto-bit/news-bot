@@ -35,26 +35,51 @@ CALENDAR_COUNTRIES = ["USD"]
 # ---------------------------------------------------------------------
 
 # Fuentes de noticias (RSS gratis, sin cuenta).
+#   - Medios directos: dan titulares crudos (se filtran por palabras clave).
+#   - "Busquedas" de Google Noticias: ya vienen filtradas por tema, asi que
+#     capturan TODO lo relevante de ese tema aunque el titular no tenga las
+#     palabras exactas (ej: discusiones de Trump, geopolitica, Fed).
 NEWS_FEEDS = {
+    # --- cripto ---
     "CoinDesk":      "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "Cointelegraph": "https://cointelegraph.com/rss",
+    "The Block":     "https://www.theblock.co/rss.xml",
+    # --- mercados / macro ---
+    "CNBC":          "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
+    "MarketWatch":   "https://feeds.content.dowjones.io/public/rss/mw_topstories",
     "Yahoo BTC":     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BTC-USD&region=US&lang=en-US",
     "Investing":     "https://www.investing.com/rss/news_25.rss",
 }
 
+# Busquedas temáticas de Google Noticias (barren TODOS los medios por tema).
+# "when:1d" = solo de las ultimas 24h. Son las que capturan a Trump, la Fed, etc.
+GOOGLE_TOPICS = {
+    "Trump/mercados": "Trump economy OR tariffs OR trade when:1d",
+    "Fed/tasas":      "Federal Reserve interest rates OR inflation when:1d",
+    "Geopolitica":    "geopolitics OR war OR sanctions OR oil market when:1d",
+    "Cripto/regulacion": "bitcoin OR crypto SEC OR ETF OR regulation when:1d",
+}
+# Las busquedas de Google ya vienen filtradas -> se les da este puntaje base
+# para que pasen el umbral aunque el titular no tenga palabras clave exactas.
+GOOGLE_BASE_SCORE = 2
+
 # Palabras de ALTO impacto (cada una suma 3 puntos).
 KW_HIGH = [
-    "fed", "fomc", "powell", "rate", "interest rate", "cpi", "inflation",
-    "sec", "etf", "hack", "exploit", "breach", "bankrupt", "insolven",
-    "liquidat", "default", "recession", "tariff", "sanction", "war",
-    "lawsuit", "ban ", "crash", "collapse", "halt", "emergency",
+    "fed", "fomc", "powell", "rate cut", "rate hike", "interest rate", "cpi",
+    "inflation", "pce", "jobs report", "payroll", "sec", "etf", "hack",
+    "exploit", "breach", "bankrupt", "insolven", "liquidat", "default",
+    "recession", "tariff", "trade war", "sanction", "war", "invasion",
+    "lawsuit", "crash", "collapse", "halt", "emergency", "downgrade",
+    "shutdown", "stimulus", "bailout",
 ]
 
 # Palabras de impacto MEDIO (cada una suma 1 punto).
 KW_MED = [
     "bitcoin", "btc", "ethereum", "eth", "crypto", "regulation", "regulat",
-    "china", "trump", "treasury", "jobs", "unemployment", "gdp", "yield",
-    "dollar", "gold", "oil", "stocks", "nasdaq", "s&p", "whale", "billion",
+    "china", "trump", "powell", "treasury", "jobs", "unemployment", "gdp",
+    "yield", "dollar", "euro", "gold", "oil", "stocks", "nasdaq", "s&p",
+    "dow", "whale", "billion", "trillion", "iran", "russia", "opec",
+    "tariff", "geopolit", "election", "debt",
 ]
 
 # Umbral: si el titular suma este puntaje o mas, dispara ALERTA instantanea.

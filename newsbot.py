@@ -132,18 +132,55 @@ def calendar_for_day(target_date):
 
 
 # --------------------------- Noticias --------------------------------
+import re as _re
+import urllib.parse as _urlparse
+
+def _google_url(query):
+    q = _urlparse.quote(query)
+    return f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+
+def _norm_title(title):
+    """Titulo normalizado para detectar la MISMA noticia en varios medios.
+    Google News agrega ' - Publicacion' al final; se lo quitamos."""
+    t = _re.sub(r"\s+-\s+[^-]+$", "", title)      # quita ' - Publisher'
+    t = _re.sub(r"[^a-z0-9 ]", "", t.lower())      # solo letras/numeros
+    t = _re.sub(r"\s+", " ", t).strip()
+    return t[:80]
+
 def collect_news():
-    """Devuelve lista de (fuente, titulo, link, entry_id)."""
-    items = []
+    """Devuelve lista de dicts: {src, title, link, eid, base}.
+    Junta medios directos + busquedas de Google, y DE-DUPLICA la misma
+    noticia contada por varios medios (se queda con la primera)."""
+    raw = []
+    # medios directos
     for src, url in C.NEWS_FEEDS.items():
         try:
             d = feedparser.parse(url)
         except Exception:
             continue
         for e in d.entries[:30]:
-            eid = e.get("id") or e.get("link") or e.get("title", "")
             title = html.unescape(e.get("title", "").strip())
-            items.append((src, title, e.get("link", ""), eid))
+            raw.append({"src": src, "title": title, "link": e.get("link", ""),
+                        "eid": e.get("id") or e.get("link") or title, "base": 0})
+    # busquedas tematicas de Google (ya vienen filtradas -> base score)
+    for tema, query in getattr(C, "GOOGLE_TOPICS", {}).items():
+        try:
+            d = feedparser.parse(_google_url(query))
+        except Exception:
+            continue
+        for e in d.entries[:20]:
+            title = html.unescape(e.get("title", "").strip())
+            raw.append({"src": tema, "title": title, "link": e.get("link", ""),
+                        "eid": e.get("id") or e.get("link") or title,
+                        "base": getattr(C, "GOOGLE_BASE_SCORE", 0)})
+    # de-duplicar por titulo normalizado
+    seen_titles, items = set(), []
+    for it in raw:
+        key = _norm_title(it["title"])
+        if not key or key in seen_titles:
+            continue
+        seen_titles.add(key)
+        items.append(it)
     return items
 
 
@@ -203,13 +240,14 @@ def build_report():
     # --- titulares mas fuertes de las ultimas horas ---
     lines.append("\n<b>Titulares destacados:</b>")
     ranked = []
-    for src, title, link, eid in collect_news():
-        pts, hits = score_headline(title)
+    for it in collect_news():
+        pts, hits = score_headline(it["title"])
+        pts += it.get("base", 0)
         if pts > 0:
-            ranked.append((pts, src, title, link))
-    ranked.sort(reverse=True)
+            ranked.append((pts, it["src"], it["title"], it["link"]))
+    ranked.sort(key=lambda x: x[0], reverse=True)
     if ranked:
-        for pts, src, title, link in ranked[:6]:
+        for pts, src, title, link in ranked[:10]:
             lines.append(f'• <a href="{esc(link)}">{esc(title)}</a> <i>({esc(src)})</i>')
     else:
         lines.append("Nada relevante en los feeds ahora mismo.")
@@ -242,15 +280,17 @@ def cmd_once(verbose=True):
     check_token()
     seen = load_seen()
     nuevos = 0
-    for src, title, link, eid in collect_news():
-        if eid in seen:
+    for it in collect_news():
+        if it["eid"] in seen:
             continue
-        seen.add(eid)
-        pts, hits = score_headline(title)
+        seen.add(it["eid"])
+        pts, hits = score_headline(it["title"])
+        pts += it.get("base", 0)
         if pts >= C.ALERT_THRESHOLD:
-            msg = (f"🚨 <b>Noticia importante</b> <i>({esc(src)})</i>\n\n"
-                   f'<a href="{esc(link)}">{esc(title)}</a>\n\n'
-                   f"<i>señales: {esc(', '.join(sorted(set(hits))))}</i>")
+            urg = "🔴🔴" if pts >= 6 else "🚨"
+            msg = (f"{urg} <b>Noticia importante</b> <i>({esc(it['src'])})</i>\n\n"
+                   f'<a href="{esc(it["link"])}">{esc(it["title"])}</a>\n\n'
+                   f"<i>señales: {esc(', '.join(sorted(set(hits))) or 'tema seguido')}</i>")
             if send(msg):
                 nuevos += 1
     save_seen(seen)
@@ -263,8 +303,8 @@ def cmd_watch():
     print(f"Vigilando noticias cada {C.WATCH_EVERY_MIN} min. Ctrl+C para parar.")
     # primera pasada: marcar lo actual como visto sin alertar (evita spam inicial)
     seen = load_seen()
-    for src, title, link, eid in collect_news():
-        seen.add(eid)
+    for it in collect_news():
+        seen.add(it["eid"])
     save_seen(seen)
     print("Estado inicial guardado. A partir de ahora solo avisa lo NUEVO.")
     while True:
