@@ -60,15 +60,28 @@ def save_seen(seen):
     # guardamos solo los ultimos 500 para no crecer infinito
     json.dump(list(seen)[-500:], open(SEEN_FILE, "w"))
 
+import re as _re2
+_KW_CACHE = {}
+def _kw_matches(kw, text):
+    """True si la palabra clave aparece como PALABRA COMPLETA (evita que
+    'war' active en 'Warsh', o 'ban' en 'urban'). Frases con espacio: subcadena."""
+    if " " in kw:
+        return kw in text
+    pat = _KW_CACHE.get(kw)
+    if pat is None:
+        pat = _re2.compile(r"\b" + _re2.escape(kw) + r"\b")
+        _KW_CACHE[kw] = pat
+    return bool(pat.search(text))
+
 def score_headline(title):
     """Devuelve (puntaje, palabras_encontradas)."""
     t = title.lower()
     pts, hits = 0, []
     for kw in C.KW_HIGH:
-        if kw in t:
+        if _kw_matches(kw, t):
             pts += 3; hits.append(kw.strip())
     for kw in C.KW_MED:
-        if kw in t:
+        if _kw_matches(kw, t):
             pts += 1; hits.append(kw.strip())
     return pts, hits
 
@@ -275,27 +288,68 @@ def cmd_report():
     if send(text):
         print("Informe enviado a Telegram.")
 
+def _short_line(title, source):
+    """Resumen de 2 lineas max. Usa IA si hay saldo; si no, recorta el titular."""
+    try:
+        import ai_summary
+        out = ai_summary.summarize_alert(title, source)
+    except Exception:
+        out = None
+    if out and out.strip().upper() != "IRRELEVANTE":
+        # nos quedamos con las primeras 2 lineas no vacias
+        lns = [l.strip() for l in out.splitlines() if l.strip()]
+        return "\n".join(lns[:2]) if lns else None
+    if out and out.strip().upper() == "IRRELEVANTE":
+        return None
+    # fallback sin IA: el titular recortado
+    return (title[:160] + "…") if len(title) > 160 else title
+
 def cmd_once(verbose=True):
-    """Revisa feeds una vez y alerta lo nuevo que supere el umbral."""
+    """Revisa feeds una vez y alerta SOLO las mas fuertes (anti-inundacion)."""
     check_token()
     seen = load_seen()
-    nuevos = 0
+
+    # 1) juntar lo nuevo que supera el umbral
+    candidatos = []
     for it in collect_news():
         if it["eid"] in seen:
             continue
-        seen.add(it["eid"])
+        seen.add(it["eid"])          # marcar visto aunque no se alerte
         pts, hits = score_headline(it["title"])
         pts += it.get("base", 0)
         if pts >= C.ALERT_THRESHOLD:
-            urg = "🔴🔴" if pts >= 6 else "🚨"
-            msg = (f"{urg} <b>Noticia importante</b> <i>({esc(it['src'])})</i>\n\n"
-                   f'<a href="{esc(it["link"])}">{esc(it["title"])}</a>\n\n'
-                   f"<i>señales: {esc(', '.join(sorted(set(hits))) or 'tema seguido')}</i>")
-            if send(msg):
-                nuevos += 1
+            candidatos.append((pts, hits, it))
+
+    # 2) quedarse solo con las N mas fuertes, evitando repetir el MISMO tema
+    #    (si dos noticias comparten las mismas palabras clave, es el mismo evento)
+    candidatos.sort(key=lambda x: x[0], reverse=True)
+    tope = getattr(C, "MAX_ALERTS_PER_RUN", 4)
+    elegidos, temas_vistos = [], set()
+    for pts, hits, it in candidatos:
+        firma = tuple(sorted(set(hits))[:3])   # firma del tema
+        if firma and firma in temas_vistos:
+            continue
+        temas_vistos.add(firma)
+        elegidos.append((pts, hits, it))
+        if len(elegidos) >= tope:
+            break
+
+    # 3) enviar en formato corto (2 lineas)
+    nuevos = 0
+    for pts, hits, it in elegidos:
+        urg = "🔴" if pts >= 9 else "🟠"
+        resumen = _short_line(it["title"], it["src"])
+        if not resumen:              # IA dijo que era irrelevante
+            continue
+        msg = (f"{urg} <b>{esc(it['src'])}</b>\n"
+               f"{esc(resumen)}\n"
+               f'<a href="{esc(it["link"])}">ver noticia</a>')
+        if send(msg):
+            nuevos += 1
+
     save_seen(seen)
     if verbose:
-        print(f"Revision hecha. Alertas nuevas enviadas: {nuevos}")
+        print(f"Revision: {len(candidatos)} superaron umbral, envie {nuevos} (tope {tope}).")
     return nuevos
 
 def cmd_watch():

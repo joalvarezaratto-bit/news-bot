@@ -12,11 +12,21 @@ try:
     import secrets_local as _sl
     _LOCAL_TOKEN = getattr(_sl, "TELEGRAM_TOKEN", "")
     _LOCAL_CHAT = getattr(_sl, "CHAT_ID", 0)
+    _LOCAL_AI = getattr(_sl, "ANTHROPIC_API_KEY", "")
 except ImportError:
-    _LOCAL_TOKEN, _LOCAL_CHAT = "", 0
+    _LOCAL_TOKEN, _LOCAL_CHAT, _LOCAL_AI = "", 0, ""
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", _LOCAL_TOKEN)
-CHAT_ID = int(os.environ.get("CHAT_ID", _LOCAL_CHAT or 0))
+def _pick(env_name, local):
+    """Usa la variable de entorno solo si NO esta vacia; si no, el valor local."""
+    v = os.environ.get(env_name)
+    return v if v else local
+
+TELEGRAM_TOKEN = _pick("TELEGRAM_TOKEN", _LOCAL_TOKEN)
+CHAT_ID = int(_pick("CHAT_ID", _LOCAL_CHAT or 0))
+ANTHROPIC_API_KEY = _pick("ANTHROPIC_API_KEY", _LOCAL_AI)
+
+# Modelo de IA para resumir (Haiku = el mas barato y rapido).
+AI_MODEL = "claude-haiku-4-5-20251001"
 
 # 3) Hora del informe diario (formato 24h) y tu zona horaria.
 REPORT_HOUR = 9
@@ -59,9 +69,9 @@ GOOGLE_TOPICS = {
     "Geopolitica":    "geopolitics OR war OR sanctions OR oil market when:1d",
     "Cripto/regulacion": "bitcoin OR crypto SEC OR ETF OR regulation when:1d",
 }
-# Las busquedas de Google ya vienen filtradas -> se les da este puntaje base
-# para que pasen el umbral aunque el titular no tenga palabras clave exactas.
-GOOGLE_BASE_SCORE = 2
+# Las busquedas de Google ya vienen filtradas -> puntaje base pequeño.
+# (Bajo, para que NO pasen solas: deben ademas tener palabras fuertes.)
+GOOGLE_BASE_SCORE = 1
 
 # Palabras de ALTO impacto (cada una suma 3 puntos).
 KW_HIGH = [
@@ -83,4 +93,9 @@ KW_MED = [
 ]
 
 # Umbral: si el titular suma este puntaje o mas, dispara ALERTA instantanea.
-ALERT_THRESHOLD = 3
+# Subido a 6 -> solo lo REALMENTE fuerte (ej: palabra de alto impacto + tema seguido).
+ALERT_THRESHOLD = 6
+
+# Tope de alertas por revision (anti-inundacion). Si hay mas que superan el
+# umbral, manda solo las N mas fuertes; el resto lo veras en el informe diario.
+MAX_ALERTS_PER_RUN = 4
