@@ -2,3 +2,4 @@ secrets_local.py
 __pycache__/
 *.pyc
 calendar_cache.json
+translate_cache.json

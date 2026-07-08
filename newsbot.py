@@ -260,8 +260,10 @@ def build_report():
             ranked.append((pts, it["src"], it["title"], it["link"]))
     ranked.sort(key=lambda x: x[0], reverse=True)
     if ranked:
+        import translate
         for pts, src, title, link in ranked[:10]:
-            lines.append(f'• <a href="{esc(link)}">{esc(title)}</a> <i>({esc(src)})</i>')
+            title_es = translate.to_es(title)
+            lines.append(f'• <a href="{esc(link)}">{esc(title_es)}</a> <i>({esc(src)})</i>')
     else:
         lines.append("Nada relevante en los feeds ahora mismo.")
 
@@ -301,8 +303,13 @@ def _short_line(title, source):
         return "\n".join(lns[:2]) if lns else None
     if out and out.strip().upper() == "IRRELEVANTE":
         return None
-    # fallback sin IA: el titular recortado
-    return (title[:160] + "…") if len(title) > 160 else title
+    # fallback sin IA: traducir el titular al español
+    try:
+        import translate
+        title = translate.to_es(title)
+    except Exception:
+        pass
+    return (title[:180] + "…") if len(title) > 180 else title
 
 def cmd_once(verbose=True):
     """Revisa feeds una vez y alerta SOLO las mas fuertes (anti-inundacion)."""
