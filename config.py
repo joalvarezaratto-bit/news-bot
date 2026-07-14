@@ -29,7 +29,7 @@ ANTHROPIC_API_KEY = _pick("ANTHROPIC_API_KEY", _LOCAL_AI)
 AI_MODEL = "claude-haiku-4-5-20251001"
 
 # 3) Hora del informe diario (formato 24h) y tu zona horaria.
-REPORT_HOUR = 9
+REPORT_HOUR = 8
 REPORT_MINUTE = 0
 TIMEZONE = "America/Santiago"   # hora de Chile (ajusta solo el horario de verano)
 
