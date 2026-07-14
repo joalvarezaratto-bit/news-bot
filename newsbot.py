@@ -162,6 +162,43 @@ def _save_reported(s):
 def _event_key(e):
     return f"{e.get('date','')}|{e.get('title','')}"
 
+# Como suele reaccionar el cripto a cada tipo de dato. Clave = palabra en el
+# titulo del evento. Valor = signo cuando el dato sale MAYOR a lo esperado:
+#   -1  mayor de lo esperado suele ser MALO para cripto (presion a la baja)
+#   +1  mayor de lo esperado suele ser BUENO para cripto (presion al alza)
+# (Se invierte si el dato sale MENOR.) Es una guia general, NO garantia.
+CRYPTO_BIAS = [
+    ("core cpi", -1), ("cpi", -1), ("core pce", -1), ("pce", -1),
+    ("inflation", -1), ("ppi", -1),                    # inflacion alta = malo
+    ("unemployment rate", +1),                          # mas paro = Fed baja tasas = bueno
+    ("initial jobless", +1), ("jobless claims", +1),    # mas desempleo = bueno p/ riesgo
+    ("non-farm", -1), ("nonfarm", -1), ("payroll", -1), # empleo fuerte = tasas altas = malo
+    ("interest rate", -1), ("federal funds", -1),       # tasa mas alta = malo
+    ("retail sales", +1), ("gdp", +1),                  # economia fuerte = apetito riesgo
+    ("consumer confidence", +1), ("ism services", +1),
+    ("ism manufacturing", +1), ("pmi", +1),
+]
+
+def crypto_read(title, actual_num, forecast_num):
+    """Devuelve texto de como PODRIA leerlo el cripto (al alza/baja) o ''."""
+    if actual_num is None or forecast_num is None or actual_num == forecast_num:
+        return ""
+    t = title.lower()
+    bias = None
+    for kw, sign in CRYPTO_BIAS:
+        if kw in t:
+            bias = sign
+            break
+    if bias is None:
+        return ""   # evento sin regla -> no arriesgamos interpretacion
+    # direccion final = bias * (signo de la sorpresa)
+    surprise = 1 if actual_num > forecast_num else -1
+    net = bias * surprise
+    if net > 0:
+        return "🟢 Lectura cripto: posible presion AL ALZA"
+    else:
+        return "🔴 Lectura cripto: posible presion A LA BAJA"
+
 def _num(s):
     """Extrae numero de textos como '0.2%', '215K', '-1.3%', '3.5M'. None si no hay."""
     if not s:
@@ -226,9 +263,12 @@ def check_calendar_results(send_fn):
         else:
             comp = "dato publicado"
         flag = "🔴" if e.get("impact") == "High" else "🟠"
+        lectura = crypto_read(e.get("title", ""), a, f)
         msg = (f"{flag} <b>RESULTADO: {esc(e.get('title',''))}</b> ({esc(e.get('country',''))})\n"
                f"Real: <b>{esc(actual)}</b>  |  esperado: {esc(fc or '—')}  |  previo: {esc(prev or '—')}\n"
                f"{comp}")
+        if lectura:
+            msg += f"\n{lectura}\n<i>(orientativo, no garantia)</i>"
         if send_fn(msg):
             reported.add(_event_key(e))
             enviados += 1
