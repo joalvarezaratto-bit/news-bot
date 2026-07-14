@@ -977,16 +977,20 @@ def cmd_once(verbose=True):
 
     seen = load_seen()
 
-    # 1) juntar lo nuevo que supera el umbral
+    # 1) juntar lo nuevo que supera el umbral (protegido: si un feed rompe,
+    #    seguimos con lo demas en vez de tumbar todo el ciclo)
     candidatos = []
-    for it in collect_news():
-        if it["eid"] in seen:
-            continue
-        seen.add(it["eid"])          # marcar visto aunque no se alerte
-        pts, hits = score_headline(it["title"])
-        pts += it.get("base", 0)
-        if pts >= C.ALERT_THRESHOLD:
-            candidatos.append((pts, hits, it))
+    try:
+        for it in collect_news():
+            if it["eid"] in seen:
+                continue
+            seen.add(it["eid"])          # marcar visto aunque no se alerte
+            pts, hits = score_headline(it["title"])
+            pts += it.get("base", 0)
+            if pts >= C.ALERT_THRESHOLD:
+                candidatos.append((pts, hits, it))
+    except Exception as e:
+        print("Error recolectando noticias:", e)
 
     # 2) quedarse solo con las N mas fuertes, evitando repetir el MISMO tema
     #    (si dos noticias comparten las mismas palabras clave, es el mismo evento)
@@ -1002,25 +1006,29 @@ def cmd_once(verbose=True):
         if len(elegidos) >= tope:
             break
 
-    # 3) enviar en formato ~4 lineas
+    # 3) enviar en formato ~4 lineas (cada una protegida: si una falla, sigue
+    #    con las demas)
     nuevos = 0
     for pts, hits, it in elegidos:
-        urg = "🔴 URGENTE" if pts >= 9 else "🟠 Relevante"
-        icono = topic_icon(it["src"] + " " + it["title"])
-        cuerpo = _build_body(it)     # ya viene con HTML escapado
-        if not cuerpo:               # IA dijo que era irrelevante
-            continue
-        msg = (f"{icono} <b>{urg}</b>  ·  <i>{esc(it['src'])}</i>\n"
-               f"{DIV}\n"
-               f"{cuerpo}\n")
-        if it.get("fuentes", 1) > 1:
-            msg += f"<i>📡 cubierto por {it['fuentes']} fuentes</i>\n"
-        pl = _price_line()
-        if pl:
-            msg += f"{pl}\n"
-        msg += f'🔗 <a href="{esc(it["link"])}">Leer noticia completa</a>'
-        if send(msg):
-            nuevos += 1
+        try:
+            urg = "🔴 URGENTE" if pts >= 9 else "🟠 Relevante"
+            icono = topic_icon(it["src"] + " " + it["title"])
+            cuerpo = _build_body(it)     # ya viene con HTML escapado
+            if not cuerpo:               # IA dijo que era irrelevante
+                continue
+            msg = (f"{icono} <b>{urg}</b>  ·  <i>{esc(it['src'])}</i>\n"
+                   f"{DIV}\n"
+                   f"{cuerpo}\n")
+            if it.get("fuentes", 1) > 1:
+                msg += f"<i>📡 cubierto por {it['fuentes']} fuentes</i>\n"
+            pl = _price_line()
+            if pl:
+                msg += f"{pl}\n"
+            msg += f'🔗 <a href="{esc(it["link"])}">Leer noticia completa</a>'
+            if send(msg):
+                nuevos += 1
+        except Exception as e:
+            print("Error enviando una alerta (sigo con las demas):", e)
 
     save_seen(seen)
 
