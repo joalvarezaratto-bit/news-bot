@@ -141,7 +141,10 @@ def calendar_for_day(target_date, source=None):
             continue
         if when.date() == target_date:
             out.append((when, e))
-    out.sort(key=lambda x: x[0])
+    # PRIORIDAD: los eventos del pais prioritario (la Fed/USD) van primero;
+    # dentro de cada grupo, por hora.
+    prio = getattr(C, "CALENDAR_PRIORITY", "USD")
+    out.sort(key=lambda x: (x[1].get("country") != prio, x[0]))
     return out
 
 
@@ -317,7 +320,9 @@ def check_calendar_results(send_fn):
                 surprise = 0 if a == f else (1 if a > f else -1)
             else:
                 comp, surprise = "dato publicado", 0
-            lectura = crypto_read_from_surprise(titulo, surprise)
+            # Lectura cripto SOLO para EE.UU. (la logica dato->Fed->cripto es de la Fed).
+            lectura = (crypto_read_from_surprise(titulo, surprise)
+                       if e.get("country") == getattr(C, "CALENDAR_PRIORITY", "USD") else "")
             msg = (f"📅 <b>DATO ECONÓMICO</b>  ·  <i>{pais}</i>\n"
                    f"{DIV}\n"
                    f"{flag} <b>{esc(titulo)}</b>\n"
@@ -330,7 +335,8 @@ def check_calendar_results(send_fn):
             if surprise is None:
                 continue   # ni feed ni titulares -> reintentar proximo ciclo
             comp = "⬆️ MAYOR a lo esperado" if surprise > 0 else "⬇️ MENOR a lo esperado"
-            lectura = crypto_read_from_surprise(titulo, surprise)
+            lectura = (crypto_read_from_surprise(titulo, surprise)
+                       if e.get("country") == getattr(C, "CALENDAR_PRIORITY", "USD") else "")
             msg = (f"📅 <b>DATO ECONÓMICO</b>  ·  <i>{pais}</i>\n"
                    f"{DIV}\n"
                    f"{flag} <b>{esc(titulo)}</b>\n"

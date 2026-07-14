@@ -37,8 +37,12 @@ TIMEZONE = "America/Santiago"   # hora de Chile (ajusta solo el horario de veran
 WATCH_EVERY_MIN = 5
 
 # 5) Paises del calendario economico que te importan.
-#    "USD" mueve mas el cripto. Agrega "EUR","CNY","GBP" si quieres globales.
-CALENDAR_COUNTRIES = ["USD"]
+#    PRIORIDAD: "USD" (la Fed) es SIEMPRE lo mas importante -> va primero.
+#    JPY/CNY = agenda asiatica que se publica de NOCHE en Chile (contexto).
+CALENDAR_COUNTRIES = ["USD", "JPY", "CNY"]
+# La Fed manda: los datos de EE.UU. tienen prioridad al mostrarse y son los
+# unicos con "lectura cripto" (la logica dato->Fed->cripto es de la Fed).
+CALENDAR_PRIORITY = "USD"
 
 # ---------------------------------------------------------------------
 #  De aqui para abajo NO necesitas tocar nada (pero puedes si quieres).
