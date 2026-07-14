@@ -398,6 +398,175 @@ def check_price_move(send_fn):
     return 1 if ok else 0
 
 
+# --------------------------- Comandos entrantes + silencio -----------
+OFFSET_FILE = os.path.join(HERE, "bot_offset.json")
+MUTE_FILE = os.path.join(HERE, "mute.json")
+
+def _load_offset():
+    if os.path.exists(OFFSET_FILE):
+        try:
+            return json.load(open(OFFSET_FILE)).get("offset", 0)
+        except Exception:
+            pass
+    return 0
+
+def _save_offset(off):
+    try:
+        json.dump({"offset": off}, open(OFFSET_FILE, "w"))
+    except Exception:
+        pass
+
+def is_muted():
+    """True si estas en modo silencio (por /silencio). Expira solo."""
+    if os.path.exists(MUTE_FILE):
+        try:
+            until = json.load(open(MUTE_FILE)).get("until", 0)
+            return time.time() < until
+        except Exception:
+            return False
+    return False
+
+def _set_mute(hours):
+    until = time.time() + hours * 3600
+    json.dump({"until": until}, open(MUTE_FILE, "w"))
+    return until
+
+def _clear_mute():
+    try:
+        if os.path.exists(MUTE_FILE):
+            os.remove(MUTE_FILE)
+    except Exception:
+        pass
+
+AYUDA = ("🤖 <b>Radar Financiero — comandos</b>\n"
+         "/precio — precio de BTC ahora\n"
+         "/semana — agenda de la semana\n"
+         "/estado — actividad de hoy y salud\n"
+         "/silencio Nh — silenciar N horas (ej: /silencio 2h)\n"
+         "/activar — quitar el silencio\n"
+         "/ayuda — esta lista")
+
+def _handle_command(text):
+    """Devuelve el texto de respuesta a un comando, o None si no aplica."""
+    t = (text or "").strip().lower()
+    if not t.startswith("/"):
+        return None
+    cmd = t.split()[0].lstrip("/")
+    if cmd in ("precio", "btc"):
+        return _price_line() or "No pude obtener el precio ahora."
+    if cmd in ("semana", "agenda"):
+        wk = week_ahead_lines()
+        cuerpo = "\n".join(wk) if wk else "<i>Sin eventos de alto impacto en el feed.</i>"
+        return f"📆 <b>Agenda de la semana</b>\n{DIV}\n{cuerpo}"
+    if cmd in ("estado", "status"):
+        st = read_stats()
+        salud = "✅ operativo" if not is_muted() else "🔕 en silencio"
+        return (f"📊 <b>Estado</b>\n{DIV}\n"
+                f"Hoy: {st['noticias']} noticias · {st['datos']} datos · "
+                f"{st['precio']} avisos de precio\n"
+                f"{_price_line()}\n{salud}")
+    if cmd in ("silencio", "mute"):
+        m = _re2.search(r"(\d+)\s*h?", t)
+        horas = int(m.group(1)) if m else 2
+        _set_mute(horas)
+        return f"🔕 Silenciado por <b>{horas}h</b>. Usa /activar para volver antes."
+    if cmd in ("activar", "unmute"):
+        _clear_mute()
+        return "🔔 Silencio quitado. Vuelvo a avisarte."
+    if cmd in ("ayuda", "help", "start"):
+        return AYUDA
+    return f"No conozco ese comando.\n\n{AYUDA}"
+
+def process_commands():
+    """Lee mensajes entrantes de Telegram y responde a los comandos.
+    Corre en cada revision (cada ~5 min); no es tiempo real."""
+    off = _load_offset()
+    res = tg("getUpdates", offset=off + 1, timeout=0)
+    if not res.get("ok"):
+        return 0
+    respondidos = 0
+    max_id = off
+    for u in res.get("result", []):
+        max_id = max(max_id, u.get("update_id", off))
+        msg = u.get("message") or u.get("channel_post") or {}
+        texto = msg.get("text", "")
+        resp = _handle_command(texto)
+        if resp:
+            send(resp)
+            respondidos += 1
+    if max_id != off:
+        _save_offset(max_id)
+    return respondidos
+
+
+# --------------------------- Salud + estadisticas --------------------
+HEARTBEAT_FILE = os.path.join(HERE, "heartbeat.json")
+STATS_FILE = os.path.join(HERE, "stats.json")
+
+def touch_heartbeat():
+    """Marca que el vigilante corrio bien recien (para detectar caidas)."""
+    try:
+        json.dump({"ts": time.time()}, open(HEARTBEAT_FILE, "w"))
+    except Exception:
+        pass
+
+def cmd_health():
+    """Avisa si el vigilante lleva mucho sin correr. Lo llama el workflow horario."""
+    check_token()
+    ts = 0
+    if os.path.exists(HEARTBEAT_FILE):
+        try:
+            ts = json.load(open(HEARTBEAT_FILE)).get("ts", 0)
+        except Exception:
+            ts = 0
+    if ts == 0:
+        print("Sin heartbeat aun; no aviso (primera vez).")
+        return
+    mins = (time.time() - ts) / 60
+    limite = getattr(C, "HEALTH_MAX_MIN", 30)
+    if mins > limite:
+        msg = (f"🛠️ <b>AVISO: el vigilante no corre</b>\n{DIV}\n"
+               f"Hace <b>{mins:.0f} min</b> que no hay una revisión exitosa "
+               f"(lo normal es cada ~5 min).\n"
+               f"<i>Puede ser un feed caído o un fallo en GitHub Actions. "
+               f"Revisa la pestaña Actions del repo.</i>")
+        if send(msg):
+            print(f"Aviso de caida enviado ({mins:.0f} min sin correr).")
+    else:
+        print(f"Vigilante sano ({mins:.0f} min desde la ultima corrida).")
+
+def record_stats(noticias, datos, precio):
+    """Suma la actividad del dia (para el resumen del informe)."""
+    hoy = dt.date.today().isoformat()
+    s = {"day": hoy, "noticias": 0, "datos": 0, "precio": 0}
+    if os.path.exists(STATS_FILE):
+        try:
+            prev = json.load(open(STATS_FILE))
+            if prev.get("day") == hoy:
+                s = prev
+        except Exception:
+            pass
+    s["noticias"] += noticias
+    s["datos"] += datos
+    s["precio"] += precio
+    try:
+        json.dump(s, open(STATS_FILE, "w"))
+    except Exception:
+        pass
+
+def read_stats():
+    """Devuelve las estadisticas de HOY (o ceros)."""
+    hoy = dt.date.today().isoformat()
+    if os.path.exists(STATS_FILE):
+        try:
+            s = json.load(open(STATS_FILE))
+            if s.get("day") == hoy:
+                return s
+        except Exception:
+            pass
+    return {"day": hoy, "noticias": 0, "datos": 0, "precio": 0}
+
+
 # --------------------------- Noticias --------------------------------
 import re as _re
 import urllib.parse as _urlparse
@@ -528,6 +697,17 @@ def build_report():
              f"<i>{today.strftime('%d/%m/%Y')}</i>",
              DIV]
 
+    # --- pulso del mercado + actividad del bot ---
+    pl = _price_line()
+    if pl:
+        lines.append(pl)
+    st = read_stats()
+    total = st["noticias"] + st["datos"] + st["precio"]
+    if total:
+        lines.append(f"<i>📨 hoy: {st['noticias']} noticias · "
+                     f"{st['datos']} datos · {st['precio']} avisos de precio</i>")
+    lines.append(DIV)
+
     # --- lo agendado para HOY ---
     hoy = calendar_for_day(today)
     lines.append("📅 <b>Agenda de hoy</b>")
@@ -651,6 +831,22 @@ def _build_body(item):
 def cmd_once(verbose=True):
     """Revisa feeds una vez y alerta SOLO las mas fuertes (anti-inundacion)."""
     check_token()
+
+    # 0) responder comandos que te hayan escrito al bot (/precio, /silencio, etc.)
+    try:
+        cmds = process_commands()
+    except Exception as e:
+        print("Error procesando comandos:", e)
+        cmds = 0
+
+    # si estas en modo silencio, no mandes alertas automaticas (pero igual
+    # respondiste comandos y dejas el heartbeat al final).
+    if is_muted():
+        touch_heartbeat()
+        if verbose:
+            print(f"En silencio: respondi {cmds} comandos, sin alertas.")
+        return 0
+
     seen = load_seen()
 
     # 1) juntar lo nuevo que supera el umbral
@@ -714,6 +910,10 @@ def cmd_once(verbose=True):
         print("Error revisando movimiento de precio:", e)
         mov = 0
 
+    # 6) registrar salud + estadisticas del dia
+    touch_heartbeat()
+    record_stats(nuevos, res, mov)
+
     if verbose:
         print(f"Revision: {len(candidatos)} superaron umbral, envie {nuevos} noticias, "
               f"{res} resultados de calendario y {mov} avisos de precio.")
@@ -737,7 +937,8 @@ def cmd_watch():
 
 
 CMDS = {"test": cmd_test, "chatid": cmd_chatid, "report": cmd_report,
-        "once": cmd_once, "watch": cmd_watch, "week": cmd_week}
+        "once": cmd_once, "watch": cmd_watch, "week": cmd_week,
+        "health": cmd_health}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""

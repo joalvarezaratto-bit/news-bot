@@ -107,3 +107,10 @@ MAX_ALERTS_PER_RUN = 4
 # manda un aviso. La referencia se reinicia tras avisar o si pasa mucho tiempo.
 PRICE_ALERT_PCT = 2.5          # % de movimiento que dispara la alerta
 PRICE_BASELINE_MAX_MIN = 90    # si la referencia es mas vieja que esto, se reinicia
+
+# ---------------------------------------------------------------------
+#  Vigilancia de salud (heartbeat): avisa si el bot deja de correr.
+# ---------------------------------------------------------------------
+# Si pasan mas de estos minutos sin una corrida exitosa del vigilante,
+# el informe (que corre cada hora) manda un aviso de que algo se rompio.
+HEALTH_MAX_MIN = 30

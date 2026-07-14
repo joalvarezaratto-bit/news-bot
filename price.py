@@ -33,6 +33,19 @@ def get_btc(force=False):
     if disk and not force and (now - disk.get("ts", 0)) < TTL:
         _MEM = disk
         return _MEM
+    # intenta CoinGecko y, si falla, Binance como respaldo
+    data = _fetch_coingecko(now) or _fetch_binance(now)
+    if data:
+        json.dump(data, open(CACHE_FILE, "w"))
+        _MEM = data
+        return data
+    # ante fallo/rate-limit de ambas, devuelve la ultima copia si existe
+    if disk:
+        _MEM = disk
+        return disk
+    return None
+
+def _fetch_coingecko(now):
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price",
@@ -40,17 +53,22 @@ def get_btc(force=False):
                     "include_24hr_change": "true"},
             headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         d = r.json()["bitcoin"]
-        data = {"price": d["usd"],
-                "change_24h": d.get("usd_24h_change", 0.0),
-                "ts": now}
-        json.dump(data, open(CACHE_FILE, "w"))
-        _MEM = data
-        return data
+        return {"price": d["usd"], "change_24h": d.get("usd_24h_change", 0.0),
+                "ts": now, "src": "coingecko"}
     except Exception:
-        # ante fallo/rate-limit, devuelve la ultima copia si existe
-        if disk:
-            _MEM = disk
-            return disk
+        return None
+
+def _fetch_binance(now):
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbol": "BTCUSDT"},
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        d = r.json()
+        return {"price": float(d["lastPrice"]),
+                "change_24h": float(d.get("priceChangePercent", 0.0)),
+                "ts": now, "src": "binance"}
+    except Exception:
         return None
 
 def btc_line():
