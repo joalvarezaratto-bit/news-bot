@@ -653,7 +653,9 @@ def topic_icon(text):
         (("fed", "tasa", "rate", "fomc", "powell", "warsh", "inflation", "cpi", "pce"), "🏦"),
         (("bitcoin", "btc", "ethereum", "eth", "cripto", "crypto", "etf"), "₿"),
         (("trump", "politic", "election", "white house", "congress"), "🏛️"),
-        (("war", "guerra", "iran", "russia", "china", "sanction", "oil", "geopolit"), "🌍"),
+        (("china", "japan", "korea", "asia", "yen", "yuan", "nikkei",
+          "hang seng", "shanghai", "kospi", "boj"), "🌏"),
+        (("war", "guerra", "iran", "russia", "sanction", "oil", "geopolit"), "🌍"),
         (("hack", "exploit", "breach", "lawsuit", "sec", "fraud"), "⚠️"),
         (("stock", "nasdaq", "s&p", "dow", "gdp", "jobs", "payroll", "retail"), "📊"),
     ]

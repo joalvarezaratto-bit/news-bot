@@ -68,6 +68,9 @@ GOOGLE_TOPICS = {
     "Fed/tasas":      "Federal Reserve interest rates OR inflation when:1d",
     "Geopolitica":    "geopolitics OR war OR sanctions OR oil market when:1d",
     "Cripto/regulacion": "bitcoin OR crypto SEC OR ETF OR regulation when:1d",
+    # --- Asia: se mueve de NOCHE en Chile (bolsas de Tokio, Shanghai, HK, Seul) ---
+    "Asia/mercados":  "China OR Japan OR Korea stock market OR economy when:1d",
+    "Bancos centrales Asia": "Bank of Japan OR PBOC OR yen OR yuan when:1d",
 }
 # Las busquedas de Google ya vienen filtradas -> puntaje base pequeño.
 # (Bajo, para que NO pasen solas: deben ademas tener palabras fuertes.)
@@ -81,6 +84,8 @@ KW_HIGH = [
     "recession", "tariff", "trade war", "sanction", "war", "invasion",
     "lawsuit", "crash", "collapse", "halt", "emergency", "downgrade",
     "shutdown", "stimulus", "bailout",
+    # --- Asia (alto impacto: bancos centrales y crisis) ---
+    "bank of japan", "boj", "pboc", "yuan devaluation", "evergrande",
 ]
 
 # Palabras de impacto MEDIO (cada una suma 1 punto).
@@ -90,6 +95,9 @@ KW_MED = [
     "yield", "dollar", "euro", "gold", "oil", "stocks", "nasdaq", "s&p",
     "dow", "whale", "billion", "trillion", "iran", "russia", "opec",
     "tariff", "geopolit", "election", "debt",
+    # --- Asia (impacto medio: bolsas y monedas asiaticas) ---
+    "china", "japan", "korea", "yen", "yuan", "nikkei", "hang seng",
+    "shanghai", "kospi", "asia",
 ]
 
 # Umbral: si el titular suma este puntaje o mas, dispara ALERTA instantanea.
