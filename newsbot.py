@@ -103,14 +103,15 @@ def _read_cal_cache():
             pass
     return 0, []
 
-def fetch_calendar():
+def fetch_calendar(force=False):
     """Eventos de esta semana (ForexFactory, gratis). Cachea en disco 3h y
-    aguanta el rate-limit 429 devolviendo la ultima copia guardada."""
+    aguanta el rate-limit 429 devolviendo la ultima copia guardada.
+    force=True ignora la cache (para ver resultados recien publicados)."""
     global _CAL_CACHE
-    if _CAL_CACHE is not None:
+    if _CAL_CACHE is not None and not force:
         return _CAL_CACHE
     ts, cached = _read_cal_cache()
-    if cached and (time.time() - ts) < CAL_TTL:
+    if cached and not force and (time.time() - ts) < CAL_TTL:
         _CAL_CACHE = cached
         return _CAL_CACHE
     try:
@@ -123,13 +124,13 @@ def fetch_calendar():
         _CAL_CACHE = data
     except Exception as e:
         print(f"No pude refrescar el calendario ({e}); uso copia guardada.")
-        _CAL_CACHE = cached
+        _CAL_CACHE = cached if cached else (_CAL_CACHE or [])
     return _CAL_CACHE
 
-def calendar_for_day(target_date):
+def calendar_for_day(target_date, source=None):
     """Eventos de impacto Alto/Medio para una fecha dada (paises configurados)."""
     out = []
-    for e in fetch_calendar():
+    for e in (source if source is not None else fetch_calendar()):
         if e.get("country") not in C.CALENDAR_COUNTRIES:
             continue
         if e.get("impact") not in ("High", "Medium"):
@@ -142,6 +143,98 @@ def calendar_for_day(target_date):
             out.append((when, e))
     out.sort(key=lambda x: x[0])
     return out
+
+
+# --------------------------- Resultados en vivo ----------------------
+RESULTS_FILE = os.path.join(HERE, "reported_events.json")
+
+def _load_reported():
+    if os.path.exists(RESULTS_FILE):
+        try:
+            return set(json.load(open(RESULTS_FILE)))
+        except Exception:
+            return set()
+    return set()
+
+def _save_reported(s):
+    json.dump(list(s)[-300:], open(RESULTS_FILE, "w"))
+
+def _event_key(e):
+    return f"{e.get('date','')}|{e.get('title','')}"
+
+def _num(s):
+    """Extrae numero de textos como '0.2%', '215K', '-1.3%', '3.5M'. None si no hay."""
+    if not s:
+        return None
+    m = _re.search(r"-?\d+(?:\.\d+)?", s.replace(",", ""))
+    if not m:
+        return None
+    v = float(m.group())
+    if "K" in s.upper():
+        v *= 1_000
+    elif "M" in s.upper():
+        v *= 1_000_000
+    return v
+
+def check_calendar_results(send_fn):
+    """Avisa el RESULTADO de eventos economicos apenas se publican (una vez).
+    Devuelve cuantos avisos mando."""
+    today = dt.date.today()
+    reported = _load_reported()
+
+    # eventos de hoy (con cache) cuya hora ya paso y aun no reportamos
+    pendientes = []
+    for when, e in calendar_for_day(today):
+        if _event_key(e) in reported:
+            continue
+        # hora del evento ya paso? (comparo en la misma zona del evento)
+        try:
+            if dt.datetime.now(when.tzinfo) < when:
+                continue   # aun no es la hora
+        except Exception:
+            continue
+        pendientes.append((when, e))
+
+    if not pendientes:
+        return 0
+
+    # hay eventos cuya hora paso -> refrescar calendario para ver si ya hay 'actual'
+    fresh = fetch_calendar(force=True)
+    enviados = 0
+    for when, _old in pendientes:
+        # buscar el evento fresco equivalente
+        e = None
+        for f in fresh:
+            if f.get("title") == _old.get("title") and f.get("date") == _old.get("date"):
+                e = f
+                break
+        e = e or _old
+        actual = e.get("actual")
+        if not actual:
+            continue   # aun sin dato publicado -> reintentar en el proximo ciclo
+        fc = e.get("forecast") or ""
+        prev = e.get("previous") or ""
+        # comparar con lo esperado
+        a, f = _num(actual), _num(fc)
+        if a is not None and f is not None:
+            if a > f:
+                comp = "⬆️ MAYOR a lo esperado"
+            elif a < f:
+                comp = "⬇️ MENOR a lo esperado"
+            else:
+                comp = "➡️ EN LINEA con lo esperado"
+        else:
+            comp = "dato publicado"
+        flag = "🔴" if e.get("impact") == "High" else "🟠"
+        msg = (f"{flag} <b>RESULTADO: {esc(e.get('title',''))}</b> ({esc(e.get('country',''))})\n"
+               f"Real: <b>{esc(actual)}</b>  |  esperado: {esc(fc or '—')}  |  previo: {esc(prev or '—')}\n"
+               f"{comp}")
+        if send_fn(msg):
+            reported.add(_event_key(e))
+            enviados += 1
+
+    _save_reported(reported)
+    return enviados
 
 
 # --------------------------- Noticias --------------------------------
@@ -371,9 +464,18 @@ def cmd_once(verbose=True):
             nuevos += 1
 
     save_seen(seen)
+
+    # 4) resultados de eventos economicos recien publicados (CPI, NFP, etc.)
+    try:
+        res = check_calendar_results(send)
+    except Exception as e:
+        print("Error revisando resultados de calendario:", e)
+        res = 0
+
     if verbose:
-        print(f"Revision: {len(candidatos)} superaron umbral, envie {nuevos} (tope {tope}).")
-    return nuevos
+        print(f"Revision: {len(candidatos)} superaron umbral, envie {nuevos} noticias "
+              f"y {res} resultados de calendario.")
+    return nuevos + res
 
 def cmd_watch():
     check_token()

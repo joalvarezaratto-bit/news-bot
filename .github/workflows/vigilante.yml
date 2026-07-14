@@ -32,6 +32,6 @@ jobs:
         run: |
           git config user.name "news-bot"
           git config user.email "news-bot@users.noreply.github.com"
-          git add seen.json || true
-          git commit -m "estado: noticias ya avisadas" || echo "sin cambios"
+          git add seen.json reported_events.json || true
+          git commit -m "estado: noticias y resultados ya avisados" || echo "sin cambios"
           git push || echo "nada que subir"
