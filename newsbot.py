@@ -193,8 +193,8 @@ def crypto_read_from_surprise(title, surprise):
     if bias is None:
         return ""   # evento sin regla -> no arriesgamos interpretacion
     net = bias * surprise
-    return ("🟢 Lectura cripto: posible presion AL ALZA" if net > 0
-            else "🔴 Lectura cripto: posible presion A LA BAJA")
+    return ("🟢 posible presión AL ALZA" if net > 0
+            else "🔴 posible presión A LA BAJA")
 
 def crypto_read(title, actual_num, forecast_num):
     """Version con numeros: calcula la sorpresa y delega."""
@@ -306,6 +306,7 @@ def check_calendar_results(send_fn):
         actual = e.get("actual")
         flag = "🔴" if e.get("impact") == "High" else "🟠"
 
+        pais = esc(e.get("country", ""))
         if actual:
             # CAMINO A: el feed trae el numero -> comparacion exacta
             a, f = _num(actual), _num(fc)
@@ -317,8 +318,11 @@ def check_calendar_results(send_fn):
             else:
                 comp, surprise = "dato publicado", 0
             lectura = crypto_read_from_surprise(titulo, surprise)
-            msg = (f"{flag} <b>RESULTADO: {esc(titulo)}</b> ({esc(e.get('country',''))})\n"
-                   f"Real: <b>{esc(actual)}</b>  |  esperado: {esc(fc or '—')}  |  previo: {esc(prev or '—')}\n"
+            msg = (f"📅 <b>DATO ECONÓMICO</b>  ·  <i>{pais}</i>\n"
+                   f"{DIV}\n"
+                   f"{flag} <b>{esc(titulo)}</b>\n"
+                   f"   Real: <b>{esc(actual)}</b>\n"
+                   f"   Esperado: {esc(fc or '—')}   ·   Previo: {esc(prev or '—')}\n"
                    f"{comp}")
         else:
             # CAMINO B: feed sin numero -> leer la DIRECCION de los titulares
@@ -327,12 +331,15 @@ def check_calendar_results(send_fn):
                 continue   # ni feed ni titulares -> reintentar proximo ciclo
             comp = "⬆️ MAYOR a lo esperado" if surprise > 0 else "⬇️ MENOR a lo esperado"
             lectura = crypto_read_from_surprise(titulo, surprise)
-            msg = (f"{flag} <b>RESULTADO: {esc(titulo)}</b> ({esc(e.get('country',''))})\n"
-                   f"{comp} (esperado: {esc(fc or '—')}, previo: {esc(prev or '—')})\n"
-                   f"<i>segun titulares: {esc((evidencia or '')[:90])}</i>")
+            msg = (f"📅 <b>DATO ECONÓMICO</b>  ·  <i>{pais}</i>\n"
+                   f"{DIV}\n"
+                   f"{flag} <b>{esc(titulo)}</b>\n"
+                   f"{comp}\n"
+                   f"   Esperado: {esc(fc or '—')}   ·   Previo: {esc(prev or '—')}\n"
+                   f"<i>según titulares: {esc((evidencia or '')[:90])}</i>")
 
         if lectura:
-            msg += f"\n{lectura}\n<i>(orientativo, no garantia)</i>"
+            msg += f"\n{DIV}\n📈 <b>Lectura cripto:</b> {lectura}\n<i>(orientativo, no garantía)</i>"
         if send_fn(msg):
             reported.add(_event_key(e))
             enviados += 1
@@ -405,10 +412,30 @@ def collect_news():
     return items
 
 
+# --------------------------- Visuales --------------------------------
+DIV = "➖➖➖➖➖➖➖➖➖➖"
+
+def topic_icon(text):
+    """Emoji segun el tema detectado en el texto (fuente o titulo)."""
+    t = (text or "").lower()
+    reglas = [
+        (("fed", "tasa", "rate", "fomc", "powell", "warsh", "inflation", "cpi", "pce"), "🏦"),
+        (("bitcoin", "btc", "ethereum", "eth", "cripto", "crypto", "etf"), "₿"),
+        (("trump", "politic", "election", "white house", "congress"), "🏛️"),
+        (("war", "guerra", "iran", "russia", "china", "sanction", "oil", "geopolit"), "🌍"),
+        (("hack", "exploit", "breach", "lawsuit", "sec", "fraud"), "⚠️"),
+        (("stock", "nasdaq", "s&p", "dow", "gdp", "jobs", "payroll", "retail"), "📊"),
+    ]
+    for claves, icono in reglas:
+        if any(k in t for k in claves):
+            return icono
+    return "📰"
+
+
 # --------------------------- Comandos --------------------------------
 def cmd_test():
     check_token()
-    if send("<b>Bot de noticias conectado.</b>\nSi ves esto, todo funciona."):
+    if send("✅ <b>Radar Financiero conectado</b>\n<i>Si ves esto, todo funciona.</i>"):
         print("Enviado. Revisa tu Telegram.")
 
 def cmd_chatid():
@@ -435,31 +462,33 @@ def build_report():
     """Arma el texto del informe matutino."""
     today = dt.date.today()
     yest = today - dt.timedelta(days=1)
-    lines = [f"<b>Informe economico — {today.strftime('%d/%m/%Y')}</b>\n"]
+    lines = [f"🗞️ <b>INFORME ECONÓMICO</b>",
+             f"<i>{today.strftime('%d/%m/%Y')}</i>",
+             DIV]
 
     # --- lo agendado para HOY ---
     hoy = calendar_for_day(today)
-    lines.append("<b>Agenda de hoy:</b>")
+    lines.append("📅 <b>Agenda de hoy</b>")
     if hoy:
         for when, e in hoy:
             flag = "🔴" if e["impact"] == "High" else "🟠"
-            fc = f" (esp: {e['forecast']}, prev: {e['previous']})" if e.get("forecast") else ""
-            lines.append(f"{flag} {when.strftime('%H:%M')} {esc(e['country'])} — {esc(e['title'])}{esc(fc)}")
+            fc = f"  <i>(esp: {esc(str(e['forecast']))} · prev: {esc(str(e['previous']))})</i>" if e.get("forecast") else ""
+            lines.append(f"{flag} <b>{when.strftime('%H:%M')}</b> {esc(e['country'])} — {esc(e['title'])}{fc}")
     else:
-        lines.append("Sin eventos de alto/medio impacto hoy.")
+        lines.append("<i>Sin eventos de alto/medio impacto hoy.</i>")
 
     # --- lo que paso AYER (eventos con dato ya publicado) ---
     ayer = calendar_for_day(yest)
-    lines.append("\n<b>Lo de ayer:</b>")
+    lines.append(f"\n{DIV}\n📊 <b>Lo de ayer</b>")
     if ayer:
         for when, e in ayer:
             act = e.get("actual") or "—"
-            lines.append(f"• {esc(e['title'])}: dato {esc(act)} (esp: {esc(e.get('forecast') or '—')})")
+            lines.append(f"• {esc(e['title'])}: <b>{esc(act)}</b> <i>(esp: {esc(e.get('forecast') or '—')})</i>")
     else:
-        lines.append("Sin eventos relevantes ayer.")
+        lines.append("<i>Sin eventos relevantes ayer.</i>")
 
     # --- titulares mas fuertes de las ultimas horas ---
-    lines.append("\n<b>Titulares destacados:</b>")
+    lines.append(f"\n{DIV}\n📰 <b>Titulares destacados</b>")
     ranked = []
     for it in collect_news():
         pts, hits = score_headline(it["title"])
@@ -471,9 +500,10 @@ def build_report():
         import translate
         for pts, src, title, link in ranked[:10]:
             title_es = translate.to_es(title)
-            lines.append(f'• <a href="{esc(link)}">{esc(title_es)}</a> <i>({esc(src)})</i>')
+            ic = topic_icon(src + " " + title)
+            lines.append(f'{ic} <a href="{esc(link)}">{esc(title_es)}</a> <i>({esc(src)})</i>')
     else:
-        lines.append("Nada relevante en los feeds ahora mismo.")
+        lines.append("<i>Nada relevante en los feeds ahora mismo.</i>")
 
     return "\n".join(lines)
 
@@ -557,13 +587,15 @@ def cmd_once(verbose=True):
     # 3) enviar en formato ~4 lineas
     nuevos = 0
     for pts, hits, it in elegidos:
-        urg = "🔴" if pts >= 9 else "🟠"
+        urg = "🔴 URGENTE" if pts >= 9 else "🟠 Relevante"
+        icono = topic_icon(it["src"] + " " + it["title"])
         cuerpo = _build_body(it)     # ya viene con HTML escapado
         if not cuerpo:               # IA dijo que era irrelevante
             continue
-        msg = (f"{urg} <i>{esc(it['src'])}</i>\n"
+        msg = (f"{icono} <b>{urg}</b>  ·  <i>{esc(it['src'])}</i>\n"
+               f"{DIV}\n"
                f"{cuerpo}\n"
-               f'<a href="{esc(it["link"])}">ver noticia</a>')
+               f'🔗 <a href="{esc(it["link"])}">Leer noticia completa</a>')
         if send(msg):
             nuevos += 1
 
