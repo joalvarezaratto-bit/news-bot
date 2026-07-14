@@ -179,9 +179,10 @@ CRYPTO_BIAS = [
     ("ism manufacturing", +1), ("pmi", +1),
 ]
 
-def crypto_read(title, actual_num, forecast_num):
-    """Devuelve texto de como PODRIA leerlo el cripto (al alza/baja) o ''."""
-    if actual_num is None or forecast_num is None or actual_num == forecast_num:
+def crypto_read_from_surprise(title, surprise):
+    """surprise: +1 dato salio MAYOR a lo esperado, -1 MENOR, 0 en linea.
+    Devuelve texto de como PODRIA leerlo el cripto (al alza/baja) o ''."""
+    if not surprise:
         return ""
     t = title.lower()
     bias = None
@@ -191,13 +192,66 @@ def crypto_read(title, actual_num, forecast_num):
             break
     if bias is None:
         return ""   # evento sin regla -> no arriesgamos interpretacion
-    # direccion final = bias * (signo de la sorpresa)
-    surprise = 1 if actual_num > forecast_num else -1
     net = bias * surprise
-    if net > 0:
-        return "🟢 Lectura cripto: posible presion AL ALZA"
+    return ("🟢 Lectura cripto: posible presion AL ALZA" if net > 0
+            else "🔴 Lectura cripto: posible presion A LA BAJA")
+
+def crypto_read(title, actual_num, forecast_num):
+    """Version con numeros: calcula la sorpresa y delega."""
+    if actual_num is None or forecast_num is None:
+        return ""
+    surprise = 0 if actual_num == forecast_num else (1 if actual_num > forecast_num else -1)
+    return crypto_read_from_surprise(title, surprise)
+
+# Palabras en titulares que indican la DIRECCION de la sorpresa (respaldo
+# cuando el feed no trae el numero 'actual'). +1 = salio mas alto de lo esperado.
+_SURPRISE_UP = ["more than expected", "higher than expected", "hotter", "above expectations",
+                "above forecast", "beats", "stronger than expected", "hot ", "reaccelerat",
+                "jumped", "surged", "accelerat", "rose more"]
+_SURPRISE_DOWN = ["less than expected", "lower than expected", "cooler", "cooled",
+                  "below expectations", "below forecast", "softer", "weaker than expected",
+                  "slowed more", "eased more", "missed", "fell more", "moderat"]
+
+def result_from_headlines(event_title):
+    """Busca en titulares recientes la direccion del dato (y el titular de prueba).
+    Devuelve (surprise, evidencia) o (None, None) si no hay señal clara."""
+    # consulta enfocada al evento (ej. 'CPI inflation report')
+    base = event_title.lower()
+    if "cpi" in base or "inflation" in base:
+        q = "CPI inflation report when:1d"
+    elif "payroll" in base or "non-farm" in base or "nonfarm" in base:
+        q = "nonfarm payrolls jobs report when:1d"
+    elif "unemployment" in base or "jobless" in base:
+        q = "unemployment jobless claims when:1d"
+    elif "pce" in base:
+        q = "PCE inflation report when:1d"
+    elif "gdp" in base:
+        q = "GDP growth report when:1d"
+    elif "retail" in base:
+        q = "retail sales report when:1d"
     else:
-        return "🔴 Lectura cripto: posible presion A LA BAJA"
+        q = event_title + " when:1d"
+    try:
+        d = feedparser.parse(_google_url(q))
+    except Exception:
+        return None, None
+    up = dn = 0
+    evidencia = None
+    for e in d.entries[:12]:
+        tl = html.unescape(e.get("title", "")).lower()
+        if any(w in tl for w in _SURPRISE_DOWN):
+            dn += 1
+            evidencia = evidencia or e.get("title", "")
+        if any(w in tl for w in _SURPRISE_UP):
+            up += 1
+            evidencia = evidencia or e.get("title", "")
+    if up == 0 and dn == 0:
+        return None, None
+    if up > dn:
+        return 1, evidencia
+    if dn > up:
+        return -1, evidencia
+    return None, None   # empate -> no arriesgamos
 
 def _num(s):
     """Extrae numero de textos como '0.2%', '215K', '-1.3%', '3.5M'. None si no hay."""
@@ -246,27 +300,37 @@ def check_calendar_results(send_fn):
                 e = f
                 break
         e = e or _old
-        actual = e.get("actual")
-        if not actual:
-            continue   # aun sin dato publicado -> reintentar en el proximo ciclo
+        titulo = e.get("title", "")
         fc = e.get("forecast") or ""
         prev = e.get("previous") or ""
-        # comparar con lo esperado
-        a, f = _num(actual), _num(fc)
-        if a is not None and f is not None:
-            if a > f:
-                comp = "⬆️ MAYOR a lo esperado"
-            elif a < f:
-                comp = "⬇️ MENOR a lo esperado"
-            else:
-                comp = "➡️ EN LINEA con lo esperado"
-        else:
-            comp = "dato publicado"
+        actual = e.get("actual")
         flag = "🔴" if e.get("impact") == "High" else "🟠"
-        lectura = crypto_read(e.get("title", ""), a, f)
-        msg = (f"{flag} <b>RESULTADO: {esc(e.get('title',''))}</b> ({esc(e.get('country',''))})\n"
-               f"Real: <b>{esc(actual)}</b>  |  esperado: {esc(fc or '—')}  |  previo: {esc(prev or '—')}\n"
-               f"{comp}")
+
+        if actual:
+            # CAMINO A: el feed trae el numero -> comparacion exacta
+            a, f = _num(actual), _num(fc)
+            if a is not None and f is not None:
+                comp = ("⬆️ MAYOR a lo esperado" if a > f else
+                        "⬇️ MENOR a lo esperado" if a < f else
+                        "➡️ EN LINEA con lo esperado")
+                surprise = 0 if a == f else (1 if a > f else -1)
+            else:
+                comp, surprise = "dato publicado", 0
+            lectura = crypto_read_from_surprise(titulo, surprise)
+            msg = (f"{flag} <b>RESULTADO: {esc(titulo)}</b> ({esc(e.get('country',''))})\n"
+                   f"Real: <b>{esc(actual)}</b>  |  esperado: {esc(fc or '—')}  |  previo: {esc(prev or '—')}\n"
+                   f"{comp}")
+        else:
+            # CAMINO B: feed sin numero -> leer la DIRECCION de los titulares
+            surprise, evidencia = result_from_headlines(titulo)
+            if surprise is None:
+                continue   # ni feed ni titulares -> reintentar proximo ciclo
+            comp = "⬆️ MAYOR a lo esperado" if surprise > 0 else "⬇️ MENOR a lo esperado"
+            lectura = crypto_read_from_surprise(titulo, surprise)
+            msg = (f"{flag} <b>RESULTADO: {esc(titulo)}</b> ({esc(e.get('country',''))})\n"
+                   f"{comp} (esperado: {esc(fc or '—')}, previo: {esc(prev or '—')})\n"
+                   f"<i>segun titulares: {esc((evidencia or '')[:90])}</i>")
+
         if lectura:
             msg += f"\n{lectura}\n<i>(orientativo, no garantia)</i>"
         if send_fn(msg):
