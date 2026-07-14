@@ -171,6 +171,14 @@ def _event_key(e):
 #   +1  mayor de lo esperado suele ser BUENO para cripto (presion al alza)
 # (Se invierte si el dato sale MENOR.) Es una guia general, NO garantia.
 CRYPTO_BIAS = [
+    # --- Asia (van PRIMERO: reglas mas especificas que las genericas de abajo) ---
+    # Japon: yen fuerte / BOJ sube tasas -> se deshace el "carry trade"
+    # (dinero barato en yenes que financia activos de riesgo) -> malo p/ cripto.
+    ("boj policy rate", -1), ("boj", -1), ("policy rate", -1),
+    # China: crecimiento fuerte -> apetito de riesgo global -> bueno p/ cripto.
+    ("industrial production", +1), ("trade balance", +1),
+    ("manufacturing pmi", +1), ("services pmi", +1), ("caixin", +1),
+    # --- EE.UU. / Fed ---
     ("core cpi", -1), ("cpi", -1), ("core pce", -1), ("pce", -1),
     ("inflation", -1), ("ppi", -1),                    # inflacion alta = malo
     ("unemployment rate", +1),                          # mas paro = Fed baja tasas = bueno
@@ -320,9 +328,7 @@ def check_calendar_results(send_fn):
                 surprise = 0 if a == f else (1 if a > f else -1)
             else:
                 comp, surprise = "dato publicado", 0
-            # Lectura cripto SOLO para EE.UU. (la logica dato->Fed->cripto es de la Fed).
-            lectura = (crypto_read_from_surprise(titulo, surprise)
-                       if e.get("country") == getattr(C, "CALENDAR_PRIORITY", "USD") else "")
+            lectura = crypto_read_from_surprise(titulo, surprise)
             msg = (f"📅 <b>DATO ECONÓMICO</b>  ·  <i>{pais}</i>\n"
                    f"{DIV}\n"
                    f"{flag} <b>{esc(titulo)}</b>\n"
@@ -335,8 +341,7 @@ def check_calendar_results(send_fn):
             if surprise is None:
                 continue   # ni feed ni titulares -> reintentar proximo ciclo
             comp = "⬆️ MAYOR a lo esperado" if surprise > 0 else "⬇️ MENOR a lo esperado"
-            lectura = (crypto_read_from_surprise(titulo, surprise)
-                       if e.get("country") == getattr(C, "CALENDAR_PRIORITY", "USD") else "")
+            lectura = crypto_read_from_surprise(titulo, surprise)
             msg = (f"📅 <b>DATO ECONÓMICO</b>  ·  <i>{pais}</i>\n"
                    f"{DIV}\n"
                    f"{flag} <b>{esc(titulo)}</b>\n"
