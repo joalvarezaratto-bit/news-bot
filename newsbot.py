@@ -365,9 +365,11 @@ def check_calendar_results(send_fn):
 # --------------------------- Movimiento de precio --------------------
 PRICE_STATE = os.path.join(HERE, "price_state.json")
 
-def check_price_move(send_fn):
+def check_price_move(send_fn, hubo_noticia=False):
     """Avisa si BTC se movio mas de PRICE_ALERT_PCT desde la ultima referencia.
-    Guarda la referencia (precio + hora) en disco. Devuelve 1 si aviso, 0 si no."""
+    Lee el FLUJO: distingue si el movimiento va con o sin noticia (sin noticia =
+    flujo puro que suele adelantarse), su intensidad y si es sostenido.
+    Guarda la referencia en disco. Devuelve 1 si aviso, 0 si no."""
     try:
         import price
         d = price.get_btc(force=True)
@@ -396,16 +398,33 @@ def check_price_move(send_fn):
     if abs(pct) < umbral:
         return 0
 
-    # movimiento fuerte -> avisar y reiniciar referencia al precio actual
-    flecha = "🟢📈" if pct > 0 else "🔴📉"
-    verbo = "SUBIÓ" if pct > 0 else "CAYÓ"
-    msg = (f"{flecha} <b>MOVIMIENTO BTC</b>\n"
-           f"{DIV}\n"
-           f"Bitcoin {verbo} <b>{pct:+.1f}%</b> en poco tiempo.\n"
-           f"   ${ref:,.0f} → <b>${cur:,.0f}</b>\n"
-           f"<i>(desde la última referencia; puede haber una noticia detrás)</i>")
-    ok = send_fn(msg)
-    json.dump({"price": cur, "ts": now}, open(PRICE_STATE, "w"))
+    subiendo = pct > 0
+    direccion = "AL ALZA" if subiendo else "A LA BAJA"
+    flecha = "🟢📈" if subiendo else "🔴📉"
+    verbo = "SUBIÓ" if subiendo else "CAYÓ"
+    fuerza = "🔥 MUY FUERTE" if abs(pct) >= umbral * 2 else "fuerte"
+
+    # flujo sostenido: mismo sentido que el aviso anterior y hace poco (<3h)
+    prev_dir = base.get("last_dir")
+    prev_ts = base.get("last_alert_ts", 0)
+    sostenido = (prev_dir == (1 if subiendo else -1)) and (now - prev_ts) < 3 * 3600
+
+    lineas = [f"{flecha} <b>MOVIMIENTO BTC — {fuerza}</b>", DIV,
+              f"Bitcoin {verbo} <b>{pct:+.1f}%</b> en poco tiempo.",
+              f"   ${ref:,.0f} → <b>${cur:,.0f}</b>"]
+    # LECTURA DEL FLUJO: lo mas valioso segun con/sin noticia
+    if hubo_noticia:
+        lineas.append(f"📊 El precio <b>confirma</b> el flujo {direccion} (hay noticia detrás).")
+    else:
+        lineas.append(f"📊 Movimiento <b>SIN noticia clara</b>: el flujo apunta "
+                      f"{direccion}. El dinero suele moverse antes que la noticia — atento.")
+    if sostenido:
+        lineas.append("⏫ <b>Flujo sostenido</b> (segundo tramo en la misma dirección).")
+
+    ok = send_fn("\n".join(lineas))
+    json.dump({"price": cur, "ts": now,
+               "last_dir": (1 if subiendo else -1), "last_alert_ts": now},
+              open(PRICE_STATE, "w"))
     return 1 if ok else 0
 
 
@@ -916,9 +935,10 @@ def cmd_once(verbose=True):
         print("Error revisando resultados de calendario:", e)
         res = 0
 
-    # 5) movimiento brusco del precio de BTC
+    # 5) movimiento brusco del precio de BTC (si hubo noticia este ciclo, el
+    #    movimiento queda "explicado"; si no, es flujo puro = mas relevante)
     try:
-        mov = check_price_move(send)
+        mov = check_price_move(send, hubo_noticia=(nuevos + res) > 0)
     except Exception as e:
         print("Error revisando movimiento de precio:", e)
         mov = 0
