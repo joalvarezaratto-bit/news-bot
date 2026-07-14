@@ -98,7 +98,7 @@ ALERT_THRESHOLD = 6
 
 # Tope de alertas por revision (anti-inundacion). Si hay mas que superan el
 # umbral, manda solo las N mas fuertes; el resto lo veras en el informe diario.
-MAX_ALERTS_PER_RUN = 4
+MAX_ALERTS_PER_RUN = 6
 
 # ---------------------------------------------------------------------
 #  Alerta de movimiento brusco de precio de Bitcoin.
