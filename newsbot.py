@@ -340,12 +340,62 @@ def check_calendar_results(send_fn):
 
         if lectura:
             msg += f"\n{DIV}\n📈 <b>Lectura cripto:</b> {lectura}\n<i>(orientativo, no garantía)</i>"
+        pl = _price_line()
+        if pl:
+            msg += f"\n{pl}"
         if send_fn(msg):
             reported.add(_event_key(e))
             enviados += 1
 
     _save_reported(reported)
     return enviados
+
+
+# --------------------------- Movimiento de precio --------------------
+PRICE_STATE = os.path.join(HERE, "price_state.json")
+
+def check_price_move(send_fn):
+    """Avisa si BTC se movio mas de PRICE_ALERT_PCT desde la ultima referencia.
+    Guarda la referencia (precio + hora) en disco. Devuelve 1 si aviso, 0 si no."""
+    try:
+        import price
+        d = price.get_btc(force=True)
+    except Exception:
+        return 0
+    if not d or not d.get("price"):
+        return 0
+    now, cur = time.time(), d["price"]
+
+    base = None
+    if os.path.exists(PRICE_STATE):
+        try:
+            base = json.load(open(PRICE_STATE))
+        except Exception:
+            base = None
+
+    max_age = getattr(C, "PRICE_BASELINE_MAX_MIN", 90) * 60
+    # sin referencia o muy vieja -> fijar una nueva y no avisar todavia
+    if not base or (now - base.get("ts", 0)) > max_age:
+        json.dump({"price": cur, "ts": now}, open(PRICE_STATE, "w"))
+        return 0
+
+    ref = base["price"]
+    pct = (cur - ref) / ref * 100 if ref else 0
+    umbral = getattr(C, "PRICE_ALERT_PCT", 2.5)
+    if abs(pct) < umbral:
+        return 0
+
+    # movimiento fuerte -> avisar y reiniciar referencia al precio actual
+    flecha = "🟢📈" if pct > 0 else "🔴📉"
+    verbo = "SUBIÓ" if pct > 0 else "CAYÓ"
+    msg = (f"{flecha} <b>MOVIMIENTO BTC</b>\n"
+           f"{DIV}\n"
+           f"Bitcoin {verbo} <b>{pct:+.1f}%</b> en poco tiempo.\n"
+           f"   ${ref:,.0f} → <b>${cur:,.0f}</b>\n"
+           f"<i>(desde la última referencia; puede haber una noticia detrás)</i>")
+    ok = send_fn(msg)
+    json.dump({"price": cur, "ts": now}, open(PRICE_STATE, "w"))
+    return 1 if ok else 0
 
 
 # --------------------------- Noticias --------------------------------
@@ -401,19 +451,31 @@ def collect_news():
                         "eid": e.get("id") or e.get("link") or title,
                         "base": getattr(C, "GOOGLE_BASE_SCORE", 0),
                         "summary": _extract_summary(e, title)})
-    # de-duplicar por titulo normalizado
-    seen_titles, items = set(), []
+    # de-duplicar por titulo normalizado, contando cuantas fuentes lo traen
+    by_key, items = {}, []
     for it in raw:
         key = _norm_title(it["title"])
-        if not key or key in seen_titles:
+        if not key:
             continue
-        seen_titles.add(key)
+        if key in by_key:
+            by_key[key]["fuentes"] += 1   # misma noticia en otro medio
+            continue
+        it["fuentes"] = 1
+        by_key[key] = it
         items.append(it)
     return items
 
 
 # --------------------------- Visuales --------------------------------
 DIV = "➖➖➖➖➖➖➖➖➖➖"
+
+def _price_line():
+    """Linea de contexto con el precio de BTC. '' si no se puede obtener."""
+    try:
+        import price
+        return esc(price.btc_line())
+    except Exception:
+        return ""
 
 def topic_icon(text):
     """Emoji segun el tema detectado en el texto (fuente o titulo)."""
@@ -505,7 +567,29 @@ def build_report():
     else:
         lines.append("<i>Nada relevante en los feeds ahora mismo.</i>")
 
+    # --- los domingos: adelanto de la semana ---
+    if today.weekday() == 6:   # 6 = domingo
+        wk = week_ahead_lines()
+        if wk:
+            lines.append(f"\n{DIV}\n📆 <b>Lo que viene esta semana</b>")
+            lines.extend(wk)
+
     return "\n".join(lines)
+
+def week_ahead_lines():
+    """Lineas con los eventos de ALTO impacto de los proximos 7 dias."""
+    today = dt.date.today()
+    cal = fetch_calendar()
+    out = []
+    for i in range(7):
+        day = today + dt.timedelta(days=i)
+        eventos = [(w, e) for w, e in calendar_for_day(day, source=cal)
+                   if e.get("impact") == "High"]
+        for when, e in eventos:
+            nombre = day.strftime('%a %d/%m')
+            out.append(f"🔴 <b>{nombre}</b> {when.strftime('%H:%M')} "
+                       f"{esc(e['country'])} — {esc(e['title'])}")
+    return out
 
 def local_now():
     """Hora actual en la zona horaria configurada (ej. Chile)."""
@@ -527,6 +611,16 @@ def cmd_report():
     text = build_report()
     if send(text):
         print("Informe enviado a Telegram.")
+
+def cmd_week():
+    check_token()
+    wk = week_ahead_lines()
+    if not wk:
+        wk = ["<i>Sin eventos de alto impacto detectados en el feed.</i>"]
+    texto = (f"📆 <b>AGENDA DE LA SEMANA</b>\n"
+             f"<i>eventos de alto impacto</i>\n{DIV}\n" + "\n".join(wk))
+    if send(texto):
+        print("Agenda semanal enviada a Telegram.")
 
 def _build_body(item):
     """Cuerpo de la alerta (~4 lineas). Con IA: que paso/por que importa/reaccion.
@@ -594,8 +688,13 @@ def cmd_once(verbose=True):
             continue
         msg = (f"{icono} <b>{urg}</b>  ·  <i>{esc(it['src'])}</i>\n"
                f"{DIV}\n"
-               f"{cuerpo}\n"
-               f'🔗 <a href="{esc(it["link"])}">Leer noticia completa</a>')
+               f"{cuerpo}\n")
+        if it.get("fuentes", 1) > 1:
+            msg += f"<i>📡 cubierto por {it['fuentes']} fuentes</i>\n"
+        pl = _price_line()
+        if pl:
+            msg += f"{pl}\n"
+        msg += f'🔗 <a href="{esc(it["link"])}">Leer noticia completa</a>'
         if send(msg):
             nuevos += 1
 
@@ -608,10 +707,17 @@ def cmd_once(verbose=True):
         print("Error revisando resultados de calendario:", e)
         res = 0
 
+    # 5) movimiento brusco del precio de BTC
+    try:
+        mov = check_price_move(send)
+    except Exception as e:
+        print("Error revisando movimiento de precio:", e)
+        mov = 0
+
     if verbose:
-        print(f"Revision: {len(candidatos)} superaron umbral, envie {nuevos} noticias "
-              f"y {res} resultados de calendario.")
-    return nuevos + res
+        print(f"Revision: {len(candidatos)} superaron umbral, envie {nuevos} noticias, "
+              f"{res} resultados de calendario y {mov} avisos de precio.")
+    return nuevos + res + mov
 
 def cmd_watch():
     check_token()
@@ -631,7 +737,7 @@ def cmd_watch():
 
 
 CMDS = {"test": cmd_test, "chatid": cmd_chatid, "report": cmd_report,
-        "once": cmd_once, "watch": cmd_watch}
+        "once": cmd_once, "watch": cmd_watch, "week": cmd_week}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""

@@ -99,3 +99,11 @@ ALERT_THRESHOLD = 6
 # Tope de alertas por revision (anti-inundacion). Si hay mas que superan el
 # umbral, manda solo las N mas fuertes; el resto lo veras en el informe diario.
 MAX_ALERTS_PER_RUN = 4
+
+# ---------------------------------------------------------------------
+#  Alerta de movimiento brusco de precio de Bitcoin.
+# ---------------------------------------------------------------------
+# Si BTC se mueve mas que este % (arriba o abajo) desde la ultima referencia,
+# manda un aviso. La referencia se reinicia tras avisar o si pasa mucho tiempo.
+PRICE_ALERT_PCT = 2.5          # % de movimiento que dispara la alerta
+PRICE_BASELINE_MAX_MIN = 90    # si la referencia es mas vieja que esto, se reinicia
