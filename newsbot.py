@@ -41,6 +41,27 @@ def send(text):
         return False
     return True
 
+def send_photo(path, caption=""):
+    """Envia una imagen (PNG) a tu chat con un pie de foto opcional."""
+    if not C.CHAT_ID:
+        print("ERROR: CHAT_ID = 0.")
+        return False
+    url = API.format(token=C.TELEGRAM_TOKEN, method="sendPhoto")
+    try:
+        with open(path, "rb") as f:
+            r = requests.post(url,
+                              data={"chat_id": C.CHAT_ID, "caption": caption[:1024],
+                                    "parse_mode": "HTML"},
+                              files={"photo": f}, timeout=60)
+        res = r.json()
+    except Exception as e:
+        print("Error enviando foto:", e)
+        return False
+    if not res.get("ok"):
+        print("Telegram respondio error (foto):", res)
+        return False
+    return True
+
 
 # --------------------------- Utilidades ------------------------------
 def check_token():
@@ -470,6 +491,7 @@ def _clear_mute():
 
 AYUDA = ("🤖 <b>Radar Financiero — comandos</b>\n"
          "/precio — precio de BTC ahora\n"
+         "/tecnico — gráfico 4h con soportes/resistencias/fibonacci\n"
          "/semana — agenda de la semana\n"
          "/estado — actividad de hoy y salud\n"
          "/silencio Nh — silenciar N horas (ej: /silencio 2h)\n"
@@ -503,6 +525,8 @@ def _handle_command(text):
     if cmd in ("activar", "unmute"):
         _clear_mute()
         return "🔔 Silencio quitado. Vuelvo a avisarte."
+    if cmd in ("tecnico", "grafico", "chart", "ta"):
+        return "__FOTO_TECNICO__"   # se maneja aparte (envia imagen, no texto)
     if cmd in ("ayuda", "help", "start"):
         return AYUDA
     return f"No conozco ese comando.\n\n{AYUDA}"
@@ -521,7 +545,10 @@ def process_commands():
         msg = u.get("message") or u.get("channel_post") or {}
         texto = msg.get("text", "")
         resp = _handle_command(texto)
-        if resp:
+        if resp == "__FOTO_TECNICO__":
+            send_tecnico()
+            respondidos += 1
+        elif resp:
             send(resp)
             respondidos += 1
     if max_id != off:
@@ -834,6 +861,75 @@ def cmd_week():
     if send(texto):
         print("Agenda semanal enviada a Telegram.")
 
+def cmd_tecnico():
+    """Genera y envia el grafico 4h con soportes/resistencias/fibonacci."""
+    check_token()
+    if send_tecnico():
+        print("Analisis tecnico enviado a Telegram.")
+    else:
+        print("No pude generar/enviar el analisis tecnico.")
+
+def send_tecnico():
+    """Arma el grafico + resumen y lo manda. Devuelve True si envio."""
+    try:
+        import technical
+        a = technical.analyze()
+        caption = technical.text_summary(a)
+        path = technical.make_chart(a, os.path.join(HERE, "btc_4h.png"))
+    except Exception as e:
+        print("Error en analisis tecnico:", e)
+        return False
+    return send_photo(path, caption)
+
+CHART_STATE = os.path.join(HERE, "chart_state.json")
+
+def check_chart_schedule(send_now=False):
+    """Envia el grafico 4h cuando el reloj de Chile entra en un horario de
+    CHART_TIMES (una vez por horario/dia). Robusto al horario de verano.
+    Devuelve 1 si envio, 0 si no. Lo llama el vigilante cada ~5 min."""
+    ahora = local_now()
+    hoy = ahora.date().isoformat()
+    horarios = getattr(C, "CHART_TIMES", [])
+
+    # cual horario "toca" ahora (dentro de una ventana de WATCH_EVERY_MIN)
+    ventana = getattr(C, "WATCH_EVERY_MIN", 5)
+    slot = None
+    for hm in horarios:
+        try:
+            hh, mm = map(int, hm.split(":"))
+        except Exception:
+            continue
+        objetivo = ahora.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        diff = (ahora - objetivo).total_seconds() / 60
+        if 0 <= diff < ventana:      # el reloj acaba de pasar ese horario
+            slot = hm
+            break
+    if slot is None and not send_now:
+        return 0
+
+    # no repetir el mismo slot el mismo dia
+    if slot is not None:
+        marca = f"{hoy} {slot}"
+        prev = ""
+        if os.path.exists(CHART_STATE):
+            try:
+                prev = json.load(open(CHART_STATE)).get("last", "")
+            except Exception:
+                prev = ""
+        if prev == marca:
+            return 0
+
+    ok = send_tecnico()
+    if ok and slot is not None:
+        json.dump({"last": f"{hoy} {slot}"}, open(CHART_STATE, "w"))
+    return 1 if ok else 0
+
+def cmd_chart_gate():
+    """Para el vigilante/cron: envia el grafico solo si toca por horario."""
+    check_token()
+    n = check_chart_schedule()
+    print(f"Grafico tecnico: {'enviado' if n else 'no tocaba ahora'}.")
+
 def _build_body(item):
     """Cuerpo de la alerta (~4 lineas). Con IA: que paso/por que importa/reaccion.
     Sin IA: titulo + extracto de la noticia, ambos traducidos al español."""
@@ -943,14 +1039,22 @@ def cmd_once(verbose=True):
         print("Error revisando movimiento de precio:", e)
         mov = 0
 
-    # 6) registrar salud + estadisticas del dia
+    # 6) grafico tecnico 4h si el reloj entra en un horario programado
+    try:
+        graf = check_chart_schedule()
+    except Exception as e:
+        print("Error enviando grafico tecnico:", e)
+        graf = 0
+
+    # 7) registrar salud + estadisticas del dia
     touch_heartbeat()
     record_stats(nuevos, res, mov)
 
     if verbose:
         print(f"Revision: {len(candidatos)} superaron umbral, envie {nuevos} noticias, "
-              f"{res} resultados de calendario y {mov} avisos de precio.")
-    return nuevos + res + mov
+              f"{res} resultados de calendario, {mov} avisos de precio y "
+              f"{graf} graficos.")
+    return nuevos + res + mov + graf
 
 def cmd_watch():
     check_token()
@@ -971,7 +1075,7 @@ def cmd_watch():
 
 CMDS = {"test": cmd_test, "chatid": cmd_chatid, "report": cmd_report,
         "once": cmd_once, "watch": cmd_watch, "week": cmd_week,
-        "health": cmd_health}
+        "health": cmd_health, "tecnico": cmd_tecnico, "chart": cmd_chart_gate}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""

@@ -36,6 +36,11 @@ TIMEZONE = "America/Santiago"   # hora de Chile (ajusta solo el horario de veran
 # 4) Cada cuantos minutos revisa noticias nuevas el vigilante (--watch).
 WATCH_EVERY_MIN = 5
 
+# 4b) Horarios (hora de Chile) en que se envia el grafico tecnico 4h de BTC.
+#     El vigilante corre cada 5 min y dispara el grafico cuando el reloj
+#     entra en uno de estos horarios (una sola vez por horario y dia).
+CHART_TIMES = ["02:40", "08:30", "12:30", "16:40", "18:40", "22:40"]
+
 # 5) Paises del calendario economico que te importan.
 #    PRIORIDAD: "USD" (la Fed) es SIEMPRE lo mas importante -> va primero.
 #    JPY/CNY = agenda asiatica que se publica de NOCHE en Chile (contexto).
